@@ -254,11 +254,15 @@ class SmolVLAAdapter:
             noise = noise.to(self._param_dtype)  # low-precision path runs a uniform-dtype model
         return noise.to("cuda:0")
 
-    def build_raw_batch(self, fixture, batch_size: int) -> dict:
+    def build_raw_batch(self, fixture, batch_size: int, run_idx: int = 0) -> dict:
+        # rotate input frames across runs so deviation metrics cover every fixture
+        # frame; batch rows stay distinct (B consecutive frames, wrapped)
+        n = fixture["images"].shape[0]
+        sel = [(run_idx + i) % n for i in range(batch_size)]
         img_key = next(iter(self.policy.config.image_features))
         state_key = next(k for k in self.policy.config.input_features if "state" in k)
-        imgs = fixture["images"][:batch_size].to("cuda:0", dtype=torch.float32) / 255.0
-        st = fixture["states"][:batch_size].to("cuda:0", dtype=torch.float32)
+        imgs = fixture["images"][sel].to("cuda:0", dtype=torch.float32) / 255.0
+        st = fixture["states"][sel].to("cuda:0", dtype=torch.float32)
         feat_shape = tuple(self.policy.config.input_features[state_key].shape)
         if st.shape[-1] < feat_shape[0]:
             pad = torch.zeros((*st.shape[:-1], feat_shape[0] - st.shape[-1]), device=st.device, dtype=st.dtype)
@@ -269,7 +273,7 @@ class SmolVLAAdapter:
         import lerobot.policies.smolvla.modeling_smolvla as modeling
 
         self._modeling = modeling
-        raw = self.build_raw_batch(fixture, self.args.batch)
+        raw = self.build_raw_batch(fixture, self.args.batch, run_idx)
         noise = self._make_noise(self.args.batch, run_idx)
         torch.cuda.synchronize()
         t0 = time.perf_counter()

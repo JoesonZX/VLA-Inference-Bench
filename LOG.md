@@ -91,5 +91,17 @@
 | SmolVLA | INT4 | 214 | 0.46 |
 | SmolVLA | INT8 | 266 | 0.65 |
 
-已可见的故事：decode 都是主导相位（OpenVLA 65%，SmolVLA 54%）；INT4 省 50–71% 权重显存但单步更慢（bnb 解量化开销）。
+**[错误 15] OpenVLA bf16 掉进 else: raise** — 修错误 14 时把 if/elif 链改断（`if int8 / elif int4 / else raise`，bf16 无分支直接抛 ValueError）→ v1 正式跑 OpenVLA 三连挂。
+→ **修法**：else 分支只在非 bf16 时 raise。**教训：改完分支逻辑应该三个精度各冒烟 30 秒再挂后台。**
+
+**[错误 16] 偏差指标建立在单一输入上（协议级 bug）** — batch=1 时每步都用 fixture 第 0 帧；OpenVLA 贪心解码是确定性的 → 30 次"采样"实为同一输入重复 30 次（v1 数据 action_l2_std≈0 暴露了这一点）。
+→ **修法**：按 `run_idx % 8` 轮换输入帧（batch 行也保持互不相同），v2 全量重跑。参考输出与量化 run 的 run_idx 对齐，配对比较依然成立。
+
+**[注意] bnb int8 会把 bf16 输入 cast 到 fp16**（`MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization`）——int8 kernel 只吃 fp16 输入，属预期行为，报告 limitations 里注明。
+
+**[v1 → v2 数据要点（v1 30 次采样，帧轮换前）]**
+- OpenVLA：bf16 196ms/14.1GB；int4 201ms/4.1GB（**延迟基本免费、权重省 71%**）；int8 308ms/7.4GB。int4 的 decode（101ms）比 bf16（128ms）**更快**——decode 是带宽受限，4bit 权重减半流量；prefill 变慢（31→53ms）——compute 受限，解量化有开销；净延迟基本打平。
+- SmolVLA：chunk 1→50 e2e 只涨 173→212ms（decode 82→88ms）——**flow-matching 并行解码使 chunk 几乎免费**，摊销后每动作成本降约 45 倍。
+- SmolVLA batch 1→8：e2e 178→265ms，吞吐近线性 ×6.7。
+
 

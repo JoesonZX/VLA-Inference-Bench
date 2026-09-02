@@ -72,7 +72,8 @@ class OpenVLAAdapter:
                 bnb_4bit_compute_dtype=torch.bfloat16,
             )
         else:
-            raise ValueError(self.args.precision)
+            if self.args.precision != "bf16":
+                raise ValueError(self.args.precision)
 
         self.model = AutoModelForVision2Seq.from_pretrained("openvla/openvla-7b", **kws)
         self.model.eval()
@@ -98,7 +99,10 @@ class OpenVLAAdapter:
     def step(self, fixture, run_idx: int) -> dict:
         from PIL import Image
 
-        img_np = fixture["images"][0].numpy() if isinstance(fixture["images"], torch.Tensor) else fixture["images"][0]
+        # rotate input frames across runs so deviation metrics cover every fixture
+        # frame, not one deterministic image
+        n = fixture["images"].shape[0]
+        img_np = fixture["images"][run_idx % n].numpy()
         image = Image.fromarray(np.transpose(img_np, (1, 2, 0)).astype(np.uint8)).convert("RGB")
         prompt = PROMPT_TMPL.format(task=fixture["task"])
 
