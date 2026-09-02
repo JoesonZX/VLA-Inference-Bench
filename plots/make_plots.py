@@ -1,4 +1,12 @@
-"""Generate every figure from results/*.json. Rerun-safe: JSONs are the only input."""
+"""Generate every figure + a markdown summary table from results/*.json.
+
+Rerun-safe: JSONs are the only input. Phase names as produced by the adapters:
+
+  openvla : vision_backbone, vision_projector, prefill_lm, decode
+            wall segments: preprocess, generate, postprocess, e2e
+  smolvla : vision, prefill_lm, decode_step (sum over num_steps denoise calls)
+            wall segments: preprocess, policy, postprocess, e2e
+"""
 import json
 from pathlib import Path
 
@@ -8,152 +16,244 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-RESULTS = Path(__file__).parent.parent / "results"
-OUT = Path(__file__).parent
+ROOT = Path(__file__).parent.parent
+RESULTS = ROOT / "results"
+OUT = ROOT
 
-PHASE_ORDER = ["vision_backbone", "vision_projector", "vision", "prefill_lm", "decode", "decode_step"]
+PHASE_COLORS = {
+    "vision": "#8ecae6",
+    "prefill_lm": "#ffb703",
+    "decode": "#fb8500",
+    "other": "#cccccc",
+}
 
 
 def load_all():
-    runs = []
-    for f in sorted(RESULTS.glob("*.json")):
-        runs.append(json.loads(f.read_text()))
-    return runs
+    return [json.loads(f.read_text()) for f in sorted(RESULTS.glob("*.json"))]
 
 
-def key_of(r):
-    return (
-        r["meta"]["model"],
-        r["meta"]["precision"],
-        r["config"].get("chunk"),
-        r["config"]["batch"],
-    )
-
-
-def phase_stack(r):
-    """(ordered phase names, means) for a single run."""
+def phases_of(r):
+    """Normalized phase -> mean ms for a run dict."""
     ph = r["latency_ms"]["phases"]
-    names = [n for n in PHASE_ORDER if n in ph]
-    # merge aliases
-    if "vision" in names and "vision_backbone" in names:
-        names.remove("vision")
-    means = [ph[n]["mean"] for n in names]
-    return names, means
+    w = r["latency_ms"]["wall"]
+    out = {}
+    vision = ph.get("vision", {}).get("mean", 0.0) + ph.get("vision_backbone", {}).get("mean", 0.0) + ph.get("vision_projector", {}).get("mean", 0.0)
+    if vision:
+        out["vision"] = vision
+    if "prefill_lm" in ph:
+        out["prefill_lm"] = ph["prefill_lm"]["mean"]
+    dec = ph.get("decode", ph.get("decode_step"))
+    if dec:
+        out["decode"] = dec["mean"]
+    known = out.get("vision", 0) + out.get("prefill_lm", 0) + out.get("decode", 0)
+    pre = w.get("preprocess", {}).get("mean", 0.0)
+    post = w.get("postprocess", {}).get("mean", 0.0)
+    other = max(w["e2e"]["mean"] - known - pre - post, 0.0)
+    out["other"] = other
+    out["_pre"] = pre
+    out["_post"] = post
+    out["_e2e"] = w["e2e"]["mean"]
+    out["_e2e_std"] = w["e2e"]["std"]
+    return out
 
 
-def fig_phase_breakdown(runs, model):
-    rs = [r for r in runs if r["meta"]["model"].startswith(model) and r["config"]["batch"] == 1]
-    if model == "openvla":
-        rs = [r for r in rs if r["config"].get("chunk") is None]
-        label = lambda r: r["meta"]["precision"].upper()
-    else:
-        rs = [r for r in rs if r["meta"]["precision"] == "bf16" and r["config"].get("chunk")]
-        label = lambda r: f"chunk={r['config']['chunk']}"
-    if not rs:
-        return False
-    rs.sort(key=label)
-    fig, ax = plt.subplots(figsize=(7, 4.2))
-    xs = np.arange(len(rs))
-    names, _ = phase_stack(rs[0])
-    bottoms = np.zeros(len(rs))
-    colors = plt.cm.Set2(np.linspace(0, 1, max(len(names), 3)))
-    for i, n in enumerate(names):
-        vals = np.array([r["latency_ms"]["phases"][n]["mean"] for r in rs])
-        errs = np.array([r["latency_ms"]["phases"][n]["std"] for r in rs])
-        ax.bar(xs, vals, bottom=bottoms, yerr=errs, capsize=3, label=n, color=colors[i])
+def stacked_ax(ax, rows, labels, title, ylabel="ms"):
+    xs = np.arange(len(rows))
+    bottoms = np.zeros(len(rows))
+    for ph in ["vision", "prefill_lm", "decode", "other"]:
+        vals = np.array([r[ph] for r in rows])
+        ax.bar(xs, vals, bottom=bottoms, label=ph, color=PHASE_COLORS[ph], width=0.6)
         bottoms += vals
-    e2e = [r["latency_ms"]["wall"]["e2e"]["mean"] for r in rs]
-    ax.plot(xs, e2e, "k_", markersize=14, label="wall e2e")
-    ax.set_xticks(xs, [label(r) for r in rs])
-    ax.set_ylabel("ms")
-    ax.set_title(f"{model}: per-phase latency breakdown (H100, batch=1)")
-    ax.legend(fontsize=8)
+    e2e = [r["_e2e"] for r in rows]
+    ax.plot(xs, e2e, "k_", markersize=16, label="wall e2e")
+    ax.set_xticks(xs, labels)
+    ax.set_ylabel(ylabel)
+    ax.set_title(title, fontsize=11)
+    ax.legend(fontsize=8, ncol=5, loc="upper left")
+
+
+def fig_openvla_precision(runs):
+    rs = [r for r in runs if r["meta"]["model"] == "openvla-7b" and r["config"]["batch"] == 1]
+    order = ["bf16", "int8", "int4"]
+    rs = sorted(rs, key=lambda r: order.index(r["meta"]["precision"]))
+    if not rs:
+        return
+    fig, ax = plt.subplots(figsize=(6.5, 4.2))
+    stacked_ax(ax, [phases_of(r) for r in rs], [r["meta"]["precision"].upper() for r in rs],
+               "OpenVLA-7B: per-phase latency by precision (H100, batch=1)")
     fig.tight_layout()
-    fig.savefig(OUT / f"fig_phase_breakdown_{model}.png", dpi=160)
+    fig.savefig(OUT / "fig_openvla_precision.png", dpi=160)
     plt.close(fig)
-    return True
+
+
+def fig_smolvla_chunk(runs):
+    rs = [r for r in runs if r["meta"]["model"] == "smolvla-450m" and r["config"]["batch"] == 1 and r["config"].get("chunk") and r["meta"]["precision"] == "fp32"]
+    rs = sorted(rs, key=lambda r: r["config"]["chunk"])
+    if not rs:
+        return
+    fig, ax = plt.subplots(figsize=(6.5, 4.2))
+    stacked_ax(ax, [phases_of(r) for r in rs], [f"chunk={r['config']['chunk']}" for r in rs],
+               "SmolVLA (fp32): per-phase latency by action chunk length (H100, batch=1)")
+    fig.tight_layout()
+    fig.savefig(OUT / "fig_smolvla_chunk.png", dpi=160)
+    plt.close(fig)
+
+
+def fig_smolvla_precision(runs):
+    rs = [r for r in runs if r["meta"]["model"] == "smolvla-450m" and r["config"]["batch"] == 1 and r["config"].get("chunk") == 50]
+    order = ["fp32", "bf16", "int8", "int4"]
+    rs = sorted(rs, key=lambda r: order.index(r["meta"]["precision"]))
+    if not rs:
+        return
+    fig, ax = plt.subplots(figsize=(6.5, 4.2))
+    stacked_ax(ax, [phases_of(r) for r in rs], [r["meta"]["precision"].upper() for r in rs],
+               "SmolVLA (chunk=50): per-phase latency by precision (H100, batch=1)")
+    fig.tight_layout()
+    fig.savefig(OUT / "fig_smolvla_precision.png", dpi=160)
+    plt.close(fig)
 
 
 def fig_quant_tradeoff(runs):
     rs = [r for r in runs if r["config"]["batch"] == 1 and (r["config"].get("chunk") in (None, 50))]
-    if len(rs) < 2:
-        return False
-    fig, ax = plt.subplots(figsize=(6.5, 4.2))
-    marks = {"openvla-7b": "o", "smolvla-450m": "s"}
+    if len(rs) < 4:
+        return
+    fig, ax = plt.subplots(figsize=(7, 4.4))
     for r in rs:
         m = r["meta"]["model"]
-        x = r["memory_gb"]["peak_allocated_gb"]
+        x = r["memory_gb"]["weights_after_warmup"]
         y = r["latency_ms"]["wall"]["e2e"]["mean"]
-        ax.scatter(x, y, marker=marks.get(m, "^"), s=70)
+        yerr = r["latency_ms"]["wall"]["e2e"]["std"]
+        ax.errorbar(x, y, yerr=yerr, fmt="o" if "openvla" in m else "s", markersize=8, capsize=3,
+                    color="#d62828" if "openvla" in m else "#1d3557")
         ax.annotate(f"{m.split('-')[0]}\n{r['meta']['precision'].upper()}", (x, y), fontsize=7, ha="center", va="bottom")
-    ax.set_xlabel("peak allocated memory (GB)")
+    ax.set_xlabel("weights memory (GB)")
     ax.set_ylabel("end-to-end latency (ms)")
-    ax.set_title("memory vs latency across precisions (H100)")
+    ax.set_title("What quantization buys (memory) and costs (latency) — H100, batch=1")
     fig.tight_layout()
     fig.savefig(OUT / "fig_quant_tradeoff.png", dpi=160)
     plt.close(fig)
-    return True
 
 
 def fig_chunk_curve(runs):
-    rs = [r for r in runs if r["meta"]["model"].startswith("smolvla") and r["config"].get("chunk") and r["config"]["batch"] == 1]
-    if len(rs) < 3:
-        return False
+    rs = [r for r in runs if r["meta"]["model"] == "smolvla-450m" and r["config"].get("chunk") and r["config"]["batch"] == 1]
+    if len(rs) < 5:
+        return
     fig, ax = plt.subplots(figsize=(6.5, 4.2))
-    for prec in ["bf16", "int8", "int4"]:
-        pts = sorted(
-            [(r["config"]["chunk"], r["latency_ms"]["wall"]["e2e"]["mean"], r["latency_ms"]["wall"]["e2e"]["std"]) for r in rs if r["meta"]["precision"] == prec]
-        )
+    for prec in ["fp32", "bf16", "int4", "int8"]:
+        pts = sorted([(r["config"]["chunk"], r["latency_ms"]["wall"]["e2e"]["mean"], r["latency_ms"]["wall"]["e2e"]["std"])
+                      for r in rs if r["meta"]["precision"] == prec])
         if not pts:
             continue
         xs, ys, es = zip(*pts)
         ax.errorbar(xs, ys, yerr=es, capsize=3, marker="o", label=prec.upper())
+        # per-action amortized cost
+    ax2 = ax.twinx()
+    pts = sorted([(r["config"]["chunk"], r["latency_ms"]["wall"]["e2e"]["mean"] / r["config"]["chunk"])
+                  for r in rs if r["meta"]["precision"] == "fp32"])
+    xs, ys = zip(*pts)
+    ax2.plot(xs, ys, "k--", alpha=0.6, label="fp32 ms/action (right)")
+    ax2.set_ylabel("ms per action (amortized)")
     ax.set_xlabel("action chunk length")
     ax.set_ylabel("end-to-end latency (ms)")
-    ax.set_title("SmolVLA: chunk length vs latency (H100, batch=1)")
-    ax.legend()
+    ax.set_title("SmolVLA: chunk length vs step latency and amortized per-action cost")
+    h1, l1 = ax.get_legend_handles_labels()
+    h2, l2 = ax2.get_legend_handles_labels()
+    ax.legend(h1 + h2, l1 + l2, fontsize=8)
     fig.tight_layout()
     fig.savefig(OUT / "fig_chunk_curve.png", dpi=160)
     plt.close(fig)
-    return True
 
 
 def fig_deviation(runs):
     rs = [r for r in runs if "deviation" in r]
     if not rs:
-        return False
-    fig, axes = plt.subplots(1, 2, figsize=(9, 3.8))
-    for ax, metric, title in [
-        (axes[0], "token_mismatch_rate", "OpenVLA action-token mismatch rate"),
-        (axes[1], "action_l2_mean", "mean action L2 vs BF16 reference"),
-    ]:
-        pts = [(f"{r['meta']['model'].split('-')[0]} {r['meta']['precision'].upper()}", r["deviation"][metric]) for r in rs if metric in r.get("deviation", {})]
+        return
+    metrics = ["token_mismatch_rate", "action_l2_mean", "chunk_mse"]
+    titles = ["OpenVLA action-token mismatch rate", "mean action L2 vs reference", "SmolVLA chunk MSE vs fp32"]
+    fig, axes = plt.subplots(1, 3, figsize=(11, 3.6))
+    for ax, metric, title in zip(axes, metrics, titles):
+        pts = [(f"{r['meta']['model'].split('-')[0]}\n{r['meta']['precision'].upper()}"
+                + (f"\nchunk={r['config']['chunk']}" if r['meta']['model'].startswith('smolvla') and r['config']['chunk'] not in (None, 50) else ""),
+                r["deviation"][metric])
+               for r in rs if metric in r.get("deviation", {})]
         if not pts:
             ax.axis("off")
             continue
         labels, vals = zip(*pts)
         ax.bar(labels, vals, color=plt.cm.Set2(np.linspace(0, 1, len(vals))))
         ax.set_title(title, fontsize=10)
-        ax.tick_params(axis="x", labelsize=8)
+        ax.tick_params(axis="x", labelsize=7)
         for i, v in enumerate(vals):
-            ax.text(i, v, f"{v:.3g}", ha="center", va="bottom", fontsize=8)
+            ax.text(i, v, f"{v:.3g}", ha="center", va="bottom", fontsize=7)
     fig.tight_layout()
     fig.savefig(OUT / "fig_deviation.png", dpi=160)
     plt.close(fig)
-    return True
+
+
+def fig_batch(runs):
+    rs = [r for r in runs if r["config"]["batch"] > 1]
+    base = [r for r in runs if r["config"]["batch"] == 1 and r["meta"]["model"] == "smolvla-450m"
+            and r["meta"]["precision"] == "bf16" and r["config"].get("chunk") == 50]
+    if not rs or not base:
+        return
+    fig, ax = plt.subplots(figsize=(6, 4))
+    rows = [(1, base[0])] + [(r["config"]["batch"], r) for r in rs]
+    rows.sort()
+    xs = [b for b, _ in rows]
+    ys = [r["latency_ms"]["wall"]["e2e"]["mean"] * b for b, r in rows]
+    ax.plot(xs, ys, marker="o", color="#1d3557")
+    for b, r in rows:
+        ax.annotate(f"{r['latency_ms']['wall']['e2e']['mean']*b:.0f}", (b, r["latency_ms"]["wall"]["e2e"]["mean"] * b),
+                    textcoords="offset points", xytext=(0, 8), fontsize=8)
+    ax.set_xticks(xs)
+    ax.set_xlabel("batch (robots sharing one GPU, SmolVLA bf16 chunk=50)")
+    ax.set_ylabel("aggregate throughput (actions chunk-steps / s)")
+    ax.set_title("Batching on SmolVLA: throughput vs batch size")
+    fig.tight_layout()
+    fig.savefig(OUT / "fig_batch.png", dpi=160)
+    plt.close(fig)
+
+
+def write_summary_md(runs):
+    lines = ["# Results summary (auto-generated from results/*.json — do not edit by hand)", ""]
+    lines += ["## Latency & memory (H100, GPU 1, batch=1)", "",
+              "| model | precision | chunk | e2e ms (mean±std) | vision | prefill | decode | preprocess | weights GB | peak GB |",
+              "|---|---|---|---|---|---|---|---|---|---|"]
+    for r in sorted(runs, key=lambda r: (r["meta"]["model"], r["meta"]["precision"], r["config"].get("chunk") or 0)):
+        if r["config"]["batch"] != 1:
+            continue
+        ph = phases_of(r)
+        w = r["latency_ms"]["wall"]
+        lines.append(
+            f"| {r['meta']['model']} | {r['meta']['precision']} | {r['config'].get('chunk') or '-'} "
+            f"| {w['e2e']['mean']:.1f}±{w['e2e']['std']:.1f} "
+            f"| {ph.get('vision', 0):.1f} | {ph.get('prefill_lm', 0):.1f} | {ph.get('decode', 0):.1f} "
+            f"| {ph['_pre']:.1f} "
+            f"| {r['memory_gb']['weights_after_warmup']:.2f} | {r['memory_gb']['peak_allocated_gb']:.2f} |"
+        )
+    dev = [r for r in runs if "deviation" in r]
+    if dev:
+        lines += ["", "## Deviation vs reference (OpenVLA: BF16 ref; SmolVLA: fp32 as-shipped ref)", "",
+                  "| model | precision | chunk | metric(s) |", "|---|---|---|---|"]
+        for r in dev:
+            d = r["deviation"]
+            s = ", ".join(f"{k}={v:.4g}" for k, v in d.items())
+            lines.append(f"| {r['meta']['model']} | {r['meta']['precision']} | {r['config'].get('chunk') or '-'} | {s} |")
+    (RESULTS / "summary.md").write_text("\n".join(lines))
+    print("wrote", RESULTS / "summary.md")
 
 
 def main():
     runs = load_all()
-    made = {
-        "openvla_phases": fig_phase_breakdown(runs, "openvla"),
-        "smolvla_phases": fig_phase_breakdown(runs, "smolvla"),
-        "quant_tradeoff": fig_quant_tradeoff(runs),
-        "chunk_curve": fig_chunk_curve(runs),
-        "deviation": fig_deviation(runs),
-    }
-    for k, v in made.items():
-        print(f"{'OK ' if v else '-- '} {k}")
+    fig_openvla_precision(runs)
+    fig_smolvla_precision(runs)
+    fig_smolvla_chunk(runs)
+    fig_quant_tradeoff(runs)
+    fig_chunk_curve(runs)
+    fig_deviation(runs)
+    fig_batch(runs)
+    write_summary_md(runs)
+    print(f"{len(runs)} result JSONs processed")
 
 
 if __name__ == "__main__":

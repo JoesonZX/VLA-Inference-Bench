@@ -23,7 +23,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--model", choices=["smolvla", "openvla"], required=True)
-    p.add_argument("--precision", choices=["bf16", "int8", "int4"], default="bf16")
+    p.add_argument("--precision", choices=["fp32", "bf16", "int8", "int4"], default="bf16",
+                   help="openvla: bf16/int8/int4 (native bf16 checkpoint); smolvla: fp32 baseline (as shipped by lerobot) or bf16/int8/int4 via replicated low-precision path")
     p.add_argument("--chunk", type=int, default=None, help="action chunk length (smolvla only)")
     p.add_argument("--batch", type=int, default=1)
     p.add_argument("--runs", type=int, default=30)
@@ -84,6 +85,8 @@ def main():
     from models.openvla import OpenVLAAdapter
     from models.smolvla import SmolVLAAdapter
 
+    if args.model == "openvla" and args.precision == "fp32":
+        sys.exit("openvla ships bf16 weights; use bf16/int8/int4")
     if args.model == "openvla" and args.batch > 1:
         sys.exit("openvla upstream generation code does not support batch > 1 (see models/openvla.py docstring)")
 

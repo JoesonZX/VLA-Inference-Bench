@@ -41,3 +41,55 @@
 - 量化：手动递归替换 nn.Linear → bnb Linear8bitLt / Linear4bit(nf4)（lerobot 不走 transformers 的量化加载路径）。
 
 **[决定] dtype 策略**：SmolVLA BF16 用 `model.to(torch.bfloat16)`（部署视角）；若 flow-matching 循环里 fp32 噪声与 bf16 权重相乘报 dtype 错误，则噪声转成参数 dtype（代码已按参数 dtype 生成噪声）并记录。实测见 Session 1 冒烟部分。
+
+**[错误 4] smolvla 环境缺 transformers** — lerobot 的 pip 包不把 transformers 列为强依赖。
+→ **修法**：`pip install transformers accelerate`（装到 5.16.1，太新）。
+
+**[错误 5] SmolVLM processor 要 num2words** — `ImportError: Package num2words is required`。
+→ **修法**：`pip install num2words`。
+
+**[错误 6] lerobot 0.3.2 读不懂 smolvla_base 新 checkpoint 格式** — 新格式把归一化统计量放在独立的 `policy_preprocessor/postprocessor` 文件里，0.3.2 期望 stats 嵌在 config.json → `normalize_inputs` 断言 stats 为 inf。
+→ **修法**：升级 `pip install -U lerobot`（0.3.2 → 0.4.4），改用官方新 API：`SmolVLAPolicy.from_pretrained` + `make_pre_post_processors(config, model_id)` 三段式（preprocess → policy → postprocess）。API 面不变（predict_action_chunk / fill_kv_cache 都在）。
+
+**[错误 7] lerobot 0.4.4 与 transformers 5.16 冲突** — lerobot 钉 huggingface_hub<1.0，transformers 5.x 需要 hub>=1.5 → `cannot import name 'is_offline_mode'`。
+→ **修法**：smolvla 环境降级 `transformers==4.57.1`（与 hub 0.35.3 兼容，SmolVLM 处理器可用）。**教训：推理仓库的依赖矩阵要么按 checkpoint 时代整套钉版本，要么准备好来回试。**
+
+**[错误 8] `config.image_features[0]` KeyError** — 0.4.4 里 image_features 是 dict 不是 list。
+→ **修法**：`next(iter(...))`。
+
+**[错误 9] scp 目标路径写成 `models/../`** — 新适配器落到了仓库根目录而不是 `models/`，服务器上跑的一直是旧版（旧版"按首个参数 dtype 批量 cast"在 fp32 模式把 state 误 cast 成 bf16 → state_proj fp32 报 dtype 错）。
+→ **修法**：显式传 `...:/models/smolvla.py`；删掉根目录杂散文件。**教训：scp 后应立即 grep 验证远端文件内容。**
+
+**[发现 A] SmolVLA 是混合精度加载** — 塔级参数（SmolVLM2 预训练权重）bf16，动作头投影（checkpoint 微调部分）fp32。lerobot 官方 eval 就这么跑；层内还有 `.to(dtype=q_proj.weight.dtype)` 胶水。因此：
+- **fp32 基线 = as-shipped 混合精度（塔 bf16 + 头 fp32），噪声 fp32** —— 这才是"官方口径"基线；
+- 低精度模式 = 全模型统一 bf16/量化 + 复刻 `sample_actions`/`denoise_step`（去掉上游硬编码的 `suffix_out.to(float32)`，Euler 步显式 cast 防 in-place 类型提升错误）。复刻代码在 models/smolvla.py，与上游逐行对照过。
+
+**[错误 10] fp32 噪声被误 cast 成 bf16** — `next(parameters()).dtype` 在 fp32 模式返回塔的 bf16，噪声被错误降精度 → action_in_proj(fp32) 报错。
+→ **修法**：仅低精度模式 cast 噪声；fp32 恒为 fp32。
+
+**[错误 11] 相位钩子只打出 vision，prefill/decode 缺失** — lerobot 源码直接调 `vlm_with_expert.forward(...)`（绕过 `nn.Module.__call__`），forward hook 不触发。
+→ **修法**：对 vlm_with_expert 用实例级 forward 猴补丁计时（按 `fill_kv_cache` 分类 prefill_lm/decode_step），vision 塔仍用常规 hook。
+
+**[错误 12] int4 报 `baddbmm_cuda not implemented for 'Byte'`** — lerobot 层内胶水读 `q_proj.weight.dtype`，bnb Params4bit 的存储 dtype 是 uint8，整层输入被 cast 成 uint8。
+→ **修法**：量化排除 q/k/v/o 四种注意力投影（保持 bf16），MLP 与其余 Linear 全量化；int8 同样排除（Int8Params dtype 是 int8，同病）。排除集对 int8/int4 一致，保证可比。
+
+**[错误 13] bnb int8 默认 threshold=6.0 病态慢** — SmolVLA int8 首测 3067ms/步（bf16 的 17 倍），OpenVLA int8 首测 6664ms/步（34 倍）：outlier 分解把每层切成大量小 matmul。
+→ **修法**：`threshold=0.0`（SmolVLA）/`llm_int8_threshold=0.0`（OpenVLA）。修后 SmolVLA int8 = 266ms，OpenVLA int8 = 399ms。**这本身是报告素材：bnb int8 默认配置在单步小 batch VLA 负载下不可用。**
+
+**[错误 14] OpenVLA int4 的 conv 层 dtype 半精度** — 量化加载默认非量化模块 fp16，pixel_values 是 bf16 → conv 报 c10::Half vs BFloat16。
+→ **修法**：所有精度统一传 `torch_dtype=torch.bfloat16`。
+
+**[冒烟结果矩阵（H100, GPU1, chunk50, batch1, 3 次粗采样）]**
+
+| 模型 | 精度 | e2e ms | 权重 GB |
+|---|---|---|---|
+| OpenVLA-7B | BF16 | 198 | 14.09 |
+| OpenVLA-7B | INT4 | 241 | 4.08 |
+| OpenVLA-7B | INT8 | 399 | 7.43 |
+| SmolVLA | FP32(混合) | 207 | 0.90 |
+| SmolVLA | BF16 | 178 | 0.89 |
+| SmolVLA | INT4 | 214 | 0.46 |
+| SmolVLA | INT8 | 266 | 0.65 |
+
+已可见的故事：decode 都是主导相位（OpenVLA 65%，SmolVLA 54%）；INT4 省 50–71% 权重显存但单步更慢（bnb 解量化开销）。
+

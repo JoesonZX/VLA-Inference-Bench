@@ -54,13 +54,14 @@ class OpenVLAAdapter:
     def load(self):
         from transformers import AutoModelForVision2Seq, AutoProcessor
 
-        kws = dict(trust_remote_code=True, device_map={"": 0})
-        if self.args.precision == "bf16":
-            kws["torch_dtype"] = torch.bfloat16
-        elif self.args.precision == "int8":
+        kws = dict(trust_remote_code=True, device_map={"": 0}, torch_dtype=torch.bfloat16)
+        if self.args.precision == "int8":
             from transformers import BitsAndBytesConfig
 
-            kws["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
+            kws["quantization_config"] = BitsAndBytesConfig(
+                load_in_8bit=True,
+                llm_int8_threshold=0.0,  # outlier decomposition at 6.0 was ~34x slower on H100 (see LOG.md)
+            )
         elif self.args.precision == "int4":
             from transformers import BitsAndBytesConfig
 
