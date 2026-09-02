@@ -1,0 +1,103 @@
+{
+  "meta": {
+    "model": "smolvla-450m",
+    "precision": "fp32",
+    "gpu": "NVIDIA H100 80GB HBM3",
+    "gpu_index_physical": 1,
+    "gpu_idle_check": {
+      "foreign_gpu_processes": [],
+      "gpu_idle": true
+    },
+    "driver": "595.58.03",
+    "versions": {
+      "torch": "2.10.0",
+      "transformers": "4.57.1",
+      "lerobot": "0.4.4",
+      "bitsandbytes": "0.50.2",
+      "timm": null,
+      "tokenizers": "0.22.2"
+    },
+    "timestamp_start": "2026-09-02T11:25:49",
+    "timestamp_end": "2026-09-02T11:26:07",
+    "vision_module_path": "vlm.model.vision_model",
+    "param_dtype": "torch.bfloat16"
+  },
+  "config": {
+    "batch": 1,
+    "chunk": 25,
+    "runs": 30,
+    "warmup": 5,
+    "seed": 0,
+    "fixture": "data/fixtures_pusht.pt"
+  },
+  "latency_ms": {
+    "wall": {
+      "preprocess": {
+        "mean": 7.075311631585161,
+        "std": 0.7376059086138439,
+        "p50": 7.2290971875190735,
+        "p99": 7.467770017683506,
+        "min": 3.329786006361246,
+        "max": 7.467770017683506
+      },
+      "policy": {
+        "mean": 164.396353585956,
+        "std": 1.31052600995206,
+        "p50": 164.42319005727768,
+        "p99": 166.05732915923,
+        "min": 160.75508715584874,
+        "max": 166.05732915923
+      },
+      "postprocess": {
+        "mean": 2.4282518153389296,
+        "std": 0.11919195328683853,
+        "p50": 2.458921866491437,
+        "p99": 2.4660530034452677,
+        "min": 1.9366599153727293,
+        "max": 2.4660530034452677
+      },
+      "e2e": {
+        "mean": 173.8999170328801,
+        "std": 1.401995336432869,
+        "p50": 174.0871900692582,
+        "p99": 175.74447090737522,
+        "min": 170.03593198023736,
+        "max": 175.74447090737522
+      }
+    },
+    "phases": {
+      "decode_step": {
+        "mean": 85.03786886533102,
+        "std": 1.2691255911117783,
+        "p50": 84.56489562988281,
+        "p99": 87.02246379852295,
+        "min": 83.021249294281,
+        "max": 87.02246379852295
+      },
+      "prefill_lm": {
+        "mean": 8.888573837280273,
+        "std": 0.47798613017261465,
+        "p50": 8.767552375793457,
+        "p99": 11.31987190246582,
+        "min": 8.742464065551758,
+        "max": 11.31987190246582
+      },
+      "vision": {
+        "mean": 14.157809066772462,
+        "std": 1.076446357007868,
+        "p50": 14.494976043701172,
+        "p99": 14.52889633178711,
+        "min": 10.287424087524414,
+        "max": 14.52889633178711
+      }
+    }
+  },
+  "memory_gb": {
+    "weights_after_load": 0.8626,
+    "weights_after_warmup": 0.895,
+    "reserved_after_warmup": 0.9414,
+    "peak_allocated_gb": 0.9201,
+    "peak_reserved_gb": 0.9414
+  },
+  "deviation_ref_saved": "results/ref_smolvla_fp32_chunk25.pt"
+}

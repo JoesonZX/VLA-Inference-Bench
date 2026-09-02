@@ -3,11 +3,14 @@ import numpy as np
 
 
 def openvla_deviation(tokens_q, actions_q, tokens_ref, actions_ref) -> dict:
-    """tokens: (R, 7) int64, actions: (R, 7) float (unnormalized units)."""
+    """tokens: (R, 7) int64, actions: (R, 7) float (unnormalized units); paired by run index."""
     tokens_q = np.asarray(tokens_q)
     tokens_ref = np.asarray(tokens_ref)
     actions_q = np.asarray(actions_q, dtype=np.float64)
     actions_ref = np.asarray(actions_ref, dtype=np.float64)
+    n = min(len(actions_q), len(actions_ref))
+    tokens_q, tokens_ref = tokens_q[:n], tokens_ref[:n]
+    actions_q, actions_ref = actions_q[:n], actions_ref[:n]
     l2 = np.linalg.norm(actions_q - actions_ref, axis=-1)  # per step
     ref_norm = np.linalg.norm(actions_ref, axis=-1)
     return {
@@ -20,9 +23,11 @@ def openvla_deviation(tokens_q, actions_q, tokens_ref, actions_ref) -> dict:
 
 
 def smolvla_deviation(actions_q, actions_ref) -> dict:
-    """actions: (R, chunk, action_dim) float."""
+    """actions: (R, chunk, action_dim) float; paired by run index, trimmed to min length."""
     q = np.asarray(actions_q, dtype=np.float64)
     r = np.asarray(actions_ref, dtype=np.float64)
+    n = min(len(q), len(r))  # runs are paired by run_idx (same seed -> same noise/input)
+    q, r = q[:n], r[:n]
     l2 = np.linalg.norm(q - r, axis=-1)  # per action in chunk
     ref_norm = np.linalg.norm(r, axis=-1)
     return {

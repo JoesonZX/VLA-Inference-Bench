@@ -99,9 +99,25 @@
 
 **[注意] bnb int8 会把 bf16 输入 cast 到 fp16**（`MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization`）——int8 kernel 只吃 fp16 输入，属预期行为，报告 limitations 里注明。
 
-**[v1 → v2 数据要点（v1 30 次采样，帧轮换前）]**
-- OpenVLA：bf16 196ms/14.1GB；int4 201ms/4.1GB（**延迟基本免费、权重省 71%**）；int8 308ms/7.4GB。int4 的 decode（101ms）比 bf16（128ms）**更快**——decode 是带宽受限，4bit 权重减半流量；prefill 变慢（31→53ms）——compute 受限，解量化有开销；净延迟基本打平。
-- SmolVLA：chunk 1→50 e2e 只涨 173→212ms（decode 82→88ms）——**flow-matching 并行解码使 chunk 几乎免费**，摊销后每动作成本降约 45 倍。
-- SmolVLA batch 1→8：e2e 178→265ms，吞吐近线性 ×6.7。
+**[v2 收尾记录]**
+- v2 全量重跑完成（31 配置，全部 idle=True）。两个配置出现瞬态双峰延迟（bf16_chunk5 p50=224/max=230 且两次复现；int4_chunk25 ±26.5）→ 均为共享集群瞬态干扰：chunk5 以 50 次采样复测后干净（177.1±2.8），int4_chunk25 复测 209.9±2.8。
+- 期间顺手修了：deviation 函数按 run_idx 配对取 min(N)（50 次 run 对 30 次参考的形状不匹配）；make_plots 输出目录笔误（图写到了仓库根）。
+- 出图两轮视觉审查后修正：堆叠图图例与 wall-e2e 样例冲突（移到图外下方）、INT8 顶部标记裁切（margins 12%）、堆叠不含 CPU 前后处理导致黑线悬空（加入 cpu_pre/cpu_post 段，堆叠= e2e）、散点图 SmolVLA FP32/BF16 标注重叠（错开 va）+ 无图例（补）。
+- 最终产物：7 张图 + results/summary.md + 31 个 JSON + 6 个参考 .pt，全部回同步到本地仓库并提交。
+
+**[Session 1 最终数据快照（协议 v2，详见 REPORT.md）]**
+
+| 模型 | 精度 | e2e ms | 权重 GB | 偏差 |
+|---|---|---|---|---|
+| OpenVLA-7B | BF16 | 195.0±2.0 | 14.09 | — |
+| OpenVLA-7B | INT8 | 308.2±4.8 | 7.43 | L2 0.147 |
+| OpenVLA-7B | INT4 | 201.3±2.0 | 4.08 | L2 0.523 |
+| SmolVLA | FP32(出厂) | 176.2±1.9 | 0.90 | — |
+| SmolVLA | BF16 | 178.8±2.9 | 0.89 | MSE 0.0024 |
+| SmolVLA | INT8 | 267.1±2.1 | 0.65 | MSE 0.035 |
+| SmolVLA | INT4 | 213.9±5.7 | 0.46 | MSE 0.244 |
+| SmolVLA bf16 batch 1→8 | | 179→270 | | 吞吐 ×6.63 |
+| SmolVLA fp32 chunk 1→50 | | 168.4→176.2 | | 摊销 47.8× |
+
 
 

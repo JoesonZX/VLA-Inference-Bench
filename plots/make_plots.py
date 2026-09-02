@@ -18,12 +18,14 @@ import numpy as np
 
 ROOT = Path(__file__).parent.parent
 RESULTS = ROOT / "results"
-OUT = ROOT
+OUT = Path(__file__).parent  # figures live next to this script in plots/
 
 PHASE_COLORS = {
     "vision": "#8ecae6",
     "prefill_lm": "#ffb703",
     "decode": "#fb8500",
+    "cpu_pre": "#e0e0e0",
+    "cpu_post": "#f5f5f5",
     "other": "#cccccc",
 }
 
@@ -48,6 +50,8 @@ def phases_of(r):
     known = out.get("vision", 0) + out.get("prefill_lm", 0) + out.get("decode", 0)
     pre = w.get("preprocess", {}).get("mean", 0.0)
     post = w.get("postprocess", {}).get("mean", 0.0)
+    out["cpu_pre"] = pre
+    out["cpu_post"] = post
     other = max(w["e2e"]["mean"] - known - pre - post, 0.0)
     out["other"] = other
     out["_pre"] = pre
@@ -60,16 +64,18 @@ def phases_of(r):
 def stacked_ax(ax, rows, labels, title, ylabel="ms"):
     xs = np.arange(len(rows))
     bottoms = np.zeros(len(rows))
-    for ph in ["vision", "prefill_lm", "decode", "other"]:
+    # stack sums to wall e2e: vision + prefill + decode + cpu pre/post + other
+    for ph in ["vision", "prefill_lm", "decode", "cpu_pre", "cpu_post", "other"]:
         vals = np.array([r[ph] for r in rows])
         ax.bar(xs, vals, bottom=bottoms, label=ph, color=PHASE_COLORS[ph], width=0.6)
         bottoms += vals
     e2e = [r["_e2e"] for r in rows]
-    ax.plot(xs, e2e, "k_", markersize=16, label="wall e2e")
+    ax.plot(xs, e2e, "k_", markersize=14, label="wall e2e")
     ax.set_xticks(xs, labels)
     ax.set_ylabel(ylabel)
     ax.set_title(title, fontsize=11)
-    ax.legend(fontsize=8, ncol=5, loc="upper left")
+    ax.margins(y=0.12)  # headroom so the wall-e2e markers are never clipped
+    ax.legend(fontsize=8, ncol=3, loc="upper center", bbox_to_anchor=(0.5, -0.10), frameon=False)
 
 
 def fig_openvla_precision(runs):
@@ -118,17 +124,34 @@ def fig_quant_tradeoff(runs):
     if len(rs) < 4:
         return
     fig, ax = plt.subplots(figsize=(7, 4.4))
+    styles = {
+        "openvla-7b": ("o", "#d62828", "OpenVLA-7B"),
+        "smolvla-450m": ("s", "#1d3557", "SmolVLA-450M"),
+    }
+    i_smol = 0
     for r in rs:
         m = r["meta"]["model"]
+        marker, color, pretty = styles.get(m, ("^", "#333333", m))
         x = r["memory_gb"]["weights_after_warmup"]
         y = r["latency_ms"]["wall"]["e2e"]["mean"]
         yerr = r["latency_ms"]["wall"]["e2e"]["std"]
-        ax.errorbar(x, y, yerr=yerr, fmt="o" if "openvla" in m else "s", markersize=8, capsize=3,
-                    color="#d62828" if "openvla" in m else "#1d3557")
-        ax.annotate(f"{m.split('-')[0]}\n{r['meta']['precision'].upper()}", (x, y), fontsize=7, ha="center", va="bottom")
+        ax.errorbar(x, y, yerr=yerr, fmt=marker, markersize=8, capsize=3, color=color, label=pretty)
+        # stagger the two nearly-coincident smolvla point labels (fp32/bf16)
+        if m == "smolvla-450m":
+            va = "bottom" if i_smol % 2 == 0 else "top"
+            i_smol += 1
+        else:
+            va = "bottom"
+        ax.annotate(f"{r['meta']['precision'].upper()}", (x, y), fontsize=7, ha="center", va=va)
     ax.set_xlabel("weights memory (GB)")
     ax.set_ylabel("end-to-end latency (ms)")
     ax.set_title("What quantization buys (memory) and costs (latency) — H100, batch=1")
+    # one legend entry per model (avoid duplicate labels)
+    handles, labels = ax.get_legend_handles_labels()
+    seen = dict()
+    for h, l in zip(handles, labels):
+        seen.setdefault(l, h)
+    ax.legend(seen.values(), seen.keys(), fontsize=9)
     fig.tight_layout()
     fig.savefig(OUT / "fig_quant_tradeoff.png", dpi=160)
     plt.close(fig)
@@ -158,7 +181,7 @@ def fig_chunk_curve(runs):
     ax.set_title("SmolVLA: chunk length vs step latency and amortized per-action cost")
     h1, l1 = ax.get_legend_handles_labels()
     h2, l2 = ax2.get_legend_handles_labels()
-    ax.legend(h1 + h2, l1 + l2, fontsize=8)
+    ax.legend(h1 + h2, l1 + l2, fontsize=8, loc="upper right", framealpha=0.9)
     fig.tight_layout()
     fig.savefig(OUT / "fig_chunk_curve.png", dpi=160)
     plt.close(fig)
@@ -181,6 +204,7 @@ def fig_deviation(runs):
             continue
         labels, vals = zip(*pts)
         ax.bar(labels, vals, color=plt.cm.Set2(np.linspace(0, 1, len(vals))))
+        ax.set_ylim(0, max(vals) * 1.18)  # headroom for value labels
         ax.set_title(title, fontsize=10)
         ax.tick_params(axis="x", labelsize=7)
         for i, v in enumerate(vals):
