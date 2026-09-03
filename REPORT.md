@@ -107,7 +107,24 @@ VLA 以观测→动作闭环运行：机器人控制通常要求 10–50 Hz 的�
 - 测量方法论教训（详见 LOG Session 2）：H100 无 root 锁不了频率，短 run 会踩时钟斜坡；跨变体对比必须同会话背靠背 + 足够 warmup + 看中位数。
 - V1（torch.compile）按剖析数据跳过：11253 次 launch 来自 lerobot 手写的 16 层 Python 循环，compile 必然大量图断裂。
 
-**结论**：概念章节的论点升级为实测——"serving 的第一笔 VLA 收益在粘合层"在启动受限配置上成立（−24% p50、零数值代价、纯 Python 级改动）；在计算/带宽受限配置上应转投 CUDA graph 一类的执行层技术。图：`fig_hoist.png`。
+**V2：CUDA graph 把去噪循环整体录进图（M4 stretch，本轮完成）**
+
+设计依据（读 `smolvlm_with_expert.py` + M4 剖析确立的三个前提）：denoise 期间 KV 字典**只读**（纯输入）；prefix 长度恒定（固定 prompt + 固定图像尺寸 → 掩码/位置恒定）；hoist 循环已无 host 同步（可捕获）。实现：每控制步 eager 跑 embed_prefix + prefill，把新 KV **拷贝进预分配静态缓冲**（地址跨步稳定 → 图可复用），把 10 步去噪循环捕获一次，之后每步只拷贝噪声进静态输入缓冲并 `graph.replay()`。相位钩子在 replay 下看不到 decode（回放的是 kernel 不是 Python）——跨变体只比墙钟。
+
+**三臂正式结果（同会话背靠背、warmup 20、30 次采样、安静窗口）**：
+
+| fp32 chunk=50 | e2e (mean±std) | p50 | vs baseline | 偏差 vs fp32 参考 |
+|---|---|---|---|---|
+| baseline（上游） | 175.7±1.4 | 176.4 | — | — |
+| hoist（粘合层重排） | 132.9±2.7 | 133.1 | −24% | **0（逐比特一致）** |
+| graph（去噪循环入图） | **96.1±2.3** | 97.1 | **−45%** | **0（逐比特一致）** |
+
+- graph 在 bf16 chunk50 同为 93.0±2.3ms；chunk 1/10/50 的 graph 延迟几乎平坦（82.5/92.2/96.1ms）——去噪的 kernel 时间本就小，剩余成本集中在 eager 段（vision 14.5 + prefill 9 + 前后处理 9 + KV 拷贝）。
+- 对照 T1 的理论地板（单步 GPU kernel 忙碌 ≈65ms）：整步 96ms，距 kernel 地板约 31ms——下一步的靶子是 prefill 段的 Python 循环（同一武器可再用一次）。
+- 上一节"chunk=50 时 hoist 偶发 130ms 快态"之谜解开：那是集群安静窗口的 hoist 稳态（本轮安静窗口下 hoist p50=133ms 稳定复现）。
+- 摊销经济：chunk=50 每动作 3.52 → 1.92 ms（baseline → graph）。
+
+**M4+V2 总结论**：从上游代码到 graph 化，**单步延迟 −45%（176→96ms）且输出逐比特不变**——零量化代价、零算法改动，纯执行层工程。三级阶梯各自消除一类开销：hoist 消同步与重复计算（CPU 侧），graph 消逐 kernel 启动（launch 侧）；这正是 LLM serving 引擎十年进化的微缩重演，也是概念章节（§5）"第一笔收益在粘合层/执行层"论点的完整实证。图：`fig_hoist.png`（三臂阶梯）。
 
 ## 5. 从 LLM Serving 看 VLA 推理（Mini-SGLang 概念映射，定稿）
 

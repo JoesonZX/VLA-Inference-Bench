@@ -71,6 +71,7 @@ class SmolVLAAdapter:
         self._hooks = []
         self._param_dtype = None
         self._hoist_cache = None
+        self._graph_state = None
 
     # ---- lifecycle ----
     def load(self):
@@ -339,6 +340,116 @@ class SmolVLAAdapter:
             x_t = x_t + (c["dt"] * v_t).to(x_t.dtype)  # python-float dt: no tensor->bool sync
         return x_t
 
+    # ---- graph variant: capture the 10-step denoise loop, replay per control step ----
+    # Prerequisites established by reading smolvlm_with_expert.py + M4 profiling:
+    #   * during denoise (fill_kv_cache=False) the KV dict is read-only -> a pure input
+    #   * prefix length is constant (fixed prompt + fixed image size) -> masks/positions constant
+    #   * the hoist loop has no host syncs -> capturable
+    # Design: eager embed_prefix+prefill per control step, COPY fresh KV into
+    # preallocated static buffers (stable addresses), then graph.replay() runs the
+    # whole 10-step flow-matching loop with the seeded noise copied into a static
+    # input buffer. Phase hooks see vision/prefill_lm but not decode (replay runs
+    # kernels, not Python) -- wall time is the only valid cross-variant metric.
+    def _denoise_loop_hoist(self, m, prefix_pad_masks, past_key_values, x_t, static_masks):
+        chunk = m.config.chunk_size
+        full_att_2d_masks, position_ids = static_masks
+        for i in range(m.config.num_steps):
+            suffix_embs, _, _ = self._embed_suffix_hoist(m, x_t, i)
+            outputs_embeds, _ = m.vlm_with_expert.forward(
+                attention_mask=full_att_2d_masks,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                inputs_embeds=[None, suffix_embs],
+                use_cache=m.config.use_cache,
+                fill_kv_cache=False,
+            )
+            suffix_out = outputs_embeds[1]
+            suffix_out = suffix_out[:, -chunk:].to(m.action_out_proj.weight.dtype)
+            v_t = m.action_out_proj(suffix_out)
+            x_t = x_t + (self._hoist_cache["dt"] * v_t).to(x_t.dtype)
+        return x_t
+
+    def _static_kv_from(self, past):
+        if self._graph_state is None or self._graph_state["kv"] is None:
+            kv = {}
+            for layer_idx, entry in past.items():
+                kv[layer_idx] = {
+                    "key_states": torch.empty_like(entry["key_states"]),
+                    "value_states": torch.empty_like(entry["value_states"]),
+                }
+            self._graph_state["kv"] = kv
+        kv = self._graph_state["kv"]
+        for layer_idx, entry in past.items():
+            kv[layer_idx]["key_states"].copy_(entry["key_states"], non_blocking=True)
+            kv[layer_idx]["value_states"].copy_(entry["value_states"], non_blocking=True)
+        return kv
+
+    def _capture_denoise_graph(self, m, prefix_pad_masks, past_static, noise):
+        chunk = m.config.chunk_size
+        bsize = noise.shape[0]
+        prefix_len = prefix_pad_masks.shape[1]
+        prefix_pad_2d_masks = prefix_pad_masks[:, None, :].expand(bsize, chunk, prefix_len)
+        suffix_att_2d_masks = self._modeling.make_att_2d_masks(
+            self._hoist_cache["pad_masks"], self._hoist_cache["att_masks"].bool()
+        )
+        full_att_2d_masks = torch.cat([prefix_pad_2d_masks, suffix_att_2d_masks], dim=2)
+        prefix_offsets = torch.sum(prefix_pad_masks, dim=-1)[:, None]
+        position_ids = prefix_offsets + torch.cumsum(self._hoist_cache["pad_masks"], dim=1) - 1
+        static_masks = (full_att_2d_masks, position_ids)
+
+        noise_static = noise.clone()
+        out_static = torch.empty_like(noise)
+
+        s = torch.cuda.Stream()
+        s.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(s):
+            for _ in range(3):  # warmup: settle kernels + allocator on the side stream
+                self._denoise_loop_hoist(m, prefix_pad_masks, past_static, noise_static, static_masks)
+        torch.cuda.current_stream().wait_stream(s)
+
+        g = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(g):
+            out_static.copy_(self._denoise_loop_hoist(m, prefix_pad_masks, past_static, noise_static, static_masks))
+
+        self._graph_state.update({
+            "graph": g, "noise_static": noise_static, "out_static": out_static,
+            "static_masks": static_masks, "prefix_len": prefix_len,
+            "key": (chunk, bsize, str(noise.dtype)),
+        })
+
+    def _sample_actions_graph(self, m, images, img_masks, lang_tokens, lang_masks, state, noise):
+        mod = self._modeling
+        bsize = state.shape[0]
+
+        prefix_embs, prefix_pad_masks, prefix_att_masks = m.embed_prefix(
+            images, img_masks, lang_tokens, lang_masks, state=state
+        )
+        prefix_att_2d_masks = mod.make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
+        prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
+        _, past_key_values = m.vlm_with_expert.forward(
+            attention_mask=prefix_att_2d_masks,
+            position_ids=prefix_position_ids,
+            past_key_values=None,
+            inputs_embeds=[prefix_embs, None],
+            use_cache=m.config.use_cache,
+            fill_kv_cache=True,
+        )
+
+        if self._hoist_cache is None or self._hoist_cache["key"] != (m.config.num_steps, m.config.chunk_size, bsize, str(noise.dtype)):
+            self._build_hoist_cache(m, bsize, noise.dtype)
+
+        if self._graph_state is None:
+            self._graph_state = {"graph": None, "kv": None}
+        key = (m.config.chunk_size, bsize, str(noise.dtype))
+        past_static = self._static_kv_from(past_key_values)
+
+        if self._graph_state["graph"] is None or self._graph_state["key"] != key:
+            self._capture_denoise_graph(m, prefix_pad_masks, past_static, noise)
+
+        self._graph_state["noise_static"].copy_(noise, non_blocking=True)
+        self._graph_state["graph"].replay()
+        return self._graph_state["out_static"].clone()
+
     # ---- one control step ----
     def _make_noise(self, bsize: int, run_idx: int) -> torch.Tensor:
         shape = (bsize, self.policy.config.chunk_size, self.policy.config.max_action_dim)
@@ -374,9 +485,11 @@ class SmolVLAAdapter:
         batch = self.preprocess(raw)
         torch.cuda.synchronize()
         t1 = time.perf_counter()
-        with torch.inference_mode():
-            variant = getattr(self.args, "variant", "baseline")
-            if variant == "hoist":
+        variant = getattr(self.args, "variant", "baseline")
+        # CUDA-graph capture is incompatible with inference_mode; run that variant under no_grad
+        ctx = torch.no_grad() if variant == "graph" else torch.inference_mode()
+        with ctx:
+            if variant in ("hoist", "graph"):
                 pol = self.policy
                 if self.args.precision != "fp32":
                     for k, v in batch.items():
@@ -386,7 +499,8 @@ class SmolVLAAdapter:
                 state = pol.prepare_state(batch)
                 lang_tokens = batch[getattr(modeling, "OBS_LANGUAGE_TOKENS", "observation.language.tokens")]
                 lang_masks = batch[getattr(modeling, "OBS_LANGUAGE_ATTENTION_MASK", "observation.language_attention_mask")]
-                actions = self._sample_actions_hoist(
+                fn = self._sample_actions_hoist if variant == "hoist" else self._sample_actions_graph
+                actions = fn(
                     pol.model, images, img_masks, lang_tokens, lang_masks, state, noise=noise
                 )
                 original_action_dim = pol.config.action_feature.shape[0]

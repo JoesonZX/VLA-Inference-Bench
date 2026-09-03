@@ -12,15 +12,19 @@
 | smolvla-450m | bf16 | 10 | 178.2±3.2 | 14.1 | 9.1 | 84.6 | 7.3 | 0.89 | 0.91 |
 | smolvla-450m | bf16 | 25 | 178.7±2.6 | 14.3 | 9.1 | 85.5 | 6.9 | 0.89 | 0.91 |
 | smolvla-450m | bf16 | 50 | 177.8±2.7 | 14.0 | 9.0 | 85.0 | 7.0 | 0.89 | 0.91 |
-| smolvla-450m | bf16 | 50 | 162.1±19.6 | 14.4 | 12.3 | 116.3 | 7.2 | 0.89 | 0.91 |
+| smolvla-450m | bf16 (graph) | 50 | 93.0±2.3 | 14.2 | 12.2 | 0.0 | 7.0 | 0.96 | 0.98 |
+| smolvla-450m | bf16 (hoist) | 50 | 162.1±19.6 | 14.4 | 12.3 | 116.3 | 7.2 | 0.89 | 0.91 |
 | smolvla-450m | fp32 | 1 | 181.7±18.9 | 14.5 | 10.4 | 92.2 | 6.9 | 0.90 | 0.92 |
-| smolvla-450m | fp32 | 1 | 129.7±1.9 | 14.4 | 9.0 | 90.9 | 6.9 | 0.90 | 0.92 |
+| smolvla-450m | fp32 (graph) | 1 | 82.5±1.5 | 14.4 | 9.1 | 0.0 | 7.1 | 0.96 | 0.98 |
+| smolvla-450m | fp32 (hoist) | 1 | 129.7±1.9 | 14.4 | 9.0 | 90.9 | 6.9 | 0.90 | 0.92 |
 | smolvla-450m | fp32 | 5 | 171.2±1.6 | 14.2 | 8.9 | 84.2 | 7.0 | 0.90 | 0.92 |
 | smolvla-450m | fp32 | 10 | 172.5±2.1 | 14.0 | 8.9 | 84.6 | 7.0 | 0.90 | 0.92 |
-| smolvla-450m | fp32 | 10 | 162.9±14.3 | 14.2 | 11.0 | 118.8 | 6.9 | 0.90 | 0.92 |
+| smolvla-450m | fp32 (graph) | 10 | 92.2±1.4 | 14.3 | 11.5 | 0.0 | 6.9 | 0.96 | 0.99 |
+| smolvla-450m | fp32 (hoist) | 10 | 162.9±14.3 | 14.2 | 11.0 | 118.8 | 6.9 | 0.90 | 0.92 |
 | smolvla-450m | fp32 | 25 | 173.9±1.4 | 14.2 | 8.9 | 85.0 | 7.1 | 0.90 | 0.92 |
-| smolvla-450m | fp32 | 50 | 179.8±10.6 | 14.2 | 9.5 | 89.1 | 6.7 | 0.90 | 0.92 |
-| smolvla-450m | fp32 | 50 | 165.8±19.3 | 14.4 | 12.4 | 120.4 | 6.7 | 0.90 | 0.92 |
+| smolvla-450m | fp32 | 50 | 175.7±1.4 | 14.4 | 8.9 | 85.9 | 7.1 | 0.90 | 0.92 |
+| smolvla-450m | fp32 (graph) | 50 | 96.1±2.3 | 14.4 | 11.2 | 0.0 | 6.6 | 0.96 | 0.99 |
+| smolvla-450m | fp32 (hoist) | 50 | 132.9±2.7 | 14.4 | 9.0 | 91.3 | 6.8 | 0.90 | 0.92 |
 | smolvla-450m | int4 | 1 | 204.1±1.7 | 14.8 | 12.0 | 108.5 | 6.9 | 0.46 | 0.48 |
 | smolvla-450m | int4 | 5 | 208.1±2.6 | 14.9 | 12.0 | 110.8 | 6.8 | 0.46 | 0.48 |
 | smolvla-450m | int4 | 10 | 211.4±2.1 | 14.8 | 12.2 | 113.5 | 7.1 | 0.46 | 0.48 |
@@ -44,8 +48,12 @@
 | smolvla-450m | bf16 | 5 | chunk_mse=0.0003847, action_l2_mean=0.04308, action_l2_std=0.02127, action_l2_relative=0.01929, max_abs_diff=0.1293 |
 | smolvla-450m | bf16 | 50 | chunk_mse=0.002418, action_l2_mean=0.1008, action_l2_std=0.06596, action_l2_relative=0.02139, max_abs_diff=0.5443 |
 | smolvla-450m | bf16 | 50 | chunk_mse=0.00281, action_l2_mean=0.09639, action_l2_std=0.08698, action_l2_relative=0.02042, max_abs_diff=0.605 |
+| smolvla-450m | bf16 | 50 | chunk_mse=0.00281, action_l2_mean=0.09639, action_l2_std=0.08698, action_l2_relative=0.02042, max_abs_diff=0.605 |
+| smolvla-450m | fp32 | 10 | chunk_mse=0, action_l2_mean=0, action_l2_std=0, action_l2_relative=0, max_abs_diff=0 |
 | smolvla-450m | fp32 | 10 | chunk_mse=0, action_l2_mean=0, action_l2_std=0, action_l2_relative=0, max_abs_diff=0 |
 | smolvla-450m | fp32 | 1 | chunk_mse=0, action_l2_mean=0, action_l2_std=0, action_l2_relative=0, max_abs_diff=0 |
+| smolvla-450m | fp32 | 1 | chunk_mse=0, action_l2_mean=0, action_l2_std=0, action_l2_relative=0, max_abs_diff=0 |
+| smolvla-450m | fp32 | 50 | chunk_mse=0, action_l2_mean=0, action_l2_std=0, action_l2_relative=0, max_abs_diff=0 |
 | smolvla-450m | fp32 | 50 | chunk_mse=0, action_l2_mean=0, action_l2_std=0, action_l2_relative=0, max_abs_diff=0 |
 | smolvla-450m | int4 | 1 | chunk_mse=0.03495, action_l2_mean=0.4258, action_l2_std=0.1685, action_l2_relative=0.2225, max_abs_diff=0.7349 |
 | smolvla-450m | int4 | 10 | chunk_mse=0.07759, action_l2_mean=0.572, action_l2_std=0.3719, action_l2_relative=0.2378, max_abs_diff=2.786 |

@@ -66,7 +66,7 @@ def stacked_ax(ax, rows, labels, title, ylabel="ms"):
     bottoms = np.zeros(len(rows))
     # stack sums to wall e2e: vision + prefill + decode + cpu pre/post + other
     for ph in ["vision", "prefill_lm", "decode", "cpu_pre", "cpu_post", "other"]:
-        vals = np.array([r[ph] for r in rows])
+        vals = np.array([r.get(ph, 0.0) for r in rows])
         ax.bar(xs, vals, bottom=bottoms, label=ph, color=PHASE_COLORS[ph], width=0.6)
         bottoms += vals
     e2e = [r["_e2e"] for r in rows]
@@ -106,7 +106,8 @@ def fig_smolvla_chunk(runs):
 
 
 def fig_smolvla_precision(runs):
-    rs = [r for r in runs if r["meta"]["model"] == "smolvla-450m" and r["config"]["batch"] == 1 and r["config"].get("chunk") == 50]
+    rs = [r for r in runs if r["meta"]["model"] == "smolvla-450m" and r["config"]["batch"] == 1 and r["config"].get("chunk") == 50
+          and r["config"].get("variant", "baseline") == "baseline"]
     order = ["fp32", "bf16", "int8", "int4"]
     rs = sorted(rs, key=lambda r: order.index(r["meta"]["precision"]))
     if not rs:
@@ -120,7 +121,8 @@ def fig_smolvla_precision(runs):
 
 
 def fig_quant_tradeoff(runs):
-    rs = [r for r in runs if r["config"]["batch"] == 1 and (r["config"].get("chunk") in (None, 50))]
+    rs = [r for r in runs if r["config"]["batch"] == 1 and (r["config"].get("chunk") in (None, 50))
+          and r["config"].get("variant", "baseline") == "baseline"]
     if len(rs) < 4:
         return
     fig, ax = plt.subplots(figsize=(7, 4.4))
@@ -239,35 +241,46 @@ def fig_batch(runs):
 
 
 def fig_hoist(runs):
-    """M4: baseline vs glue-optimized (hoist) e2e, paired per config."""
-    pairs = []
+    """M4/V2: baseline vs hoist vs graph (where present) e2e, grouped per config."""
+    groups = []
     for prec in ["fp32", "bf16"]:
         for chunk in [1, 10, 50]:
-            b = [r for r in runs if r["meta"]["model"] == "smolvla-450m" and r["meta"]["precision"] == prec
-                 and r["config"].get("chunk") == chunk and r["config"]["batch"] == 1
-                 and r["config"].get("variant", "baseline") == "baseline"]
-            h = [r for r in runs if r["meta"]["model"] == "smolvla-450m" and r["meta"]["precision"] == prec
-                 and r["config"].get("chunk") == chunk and r["config"]["batch"] == 1
-                 and r["config"].get("variant") == "hoist"]
-            if b and h:
-                pairs.append((prec, chunk, b[0], h[0]))
-    if not pairs:
+            sel = {}
+            for var in ["baseline", "hoist", "graph"]:
+                r = [x for x in runs if x["meta"]["model"] == "smolvla-450m" and x["meta"]["precision"] == prec
+                     and x["config"].get("chunk") == chunk and x["config"]["batch"] == 1
+                     and x["config"].get("variant", "baseline") == var]
+                if r:
+                    sel[var] = r[0]
+            if "baseline" in sel and len(sel) >= 2:
+                groups.append((prec, chunk, sel))
+    if not groups:
         return
-    fig, ax = plt.subplots(figsize=(7.5, 4.2))
-    xs = np.arange(len(pairs))
-    w = 0.38
-    for off, idx, label, color in [(-w / 2, 2, "baseline (upstream)", "#999999"), (w / 2, 3, "hoist (glue optimized)", "#2a9d8f")]:
-        vals = [p[idx]["latency_ms"]["wall"]["e2e"]["mean"] for p in pairs]
-        errs = [p[idx]["latency_ms"]["wall"]["e2e"]["std"] for p in pairs]
-        ax.bar(xs + off, vals, width=w, yerr=errs, capsize=3, label=label, color=color)
-    for i, (_, _, b, h) in enumerate(pairs):
-        saving = (b["latency_ms"]["wall"]["e2e"]["mean"] - h["latency_ms"]["wall"]["e2e"]["mean"]) / b["latency_ms"]["wall"]["e2e"]["mean"] * 100
-        top = max(b["latency_ms"]["wall"]["e2e"]["mean"], h["latency_ms"]["wall"]["e2e"]["mean"])
-        ax.text(i, top * 1.03, f"−{saving:.0f}%", ha="center", fontsize=9, color="#2a9d8f", fontweight="bold")
-    ax.set_xticks(xs, [f"{p[0]}\nchunk={p[1]}" for p in pairs])
+    bars = [("baseline", "#999999", -1), ("hoist", "#2a9d8f", 0), ("graph", "#e76f51", 1)]
+    fig, ax = plt.subplots(figsize=(8, 4.4))
+    xs = np.arange(len(groups))
+    w = 0.26
+    for var, color, off in bars:
+        vals, errs = [], []
+        for _, _, sel in groups:
+            r = sel.get(var)
+            vals.append(r["latency_ms"]["wall"]["e2e"]["mean"] if r else np.nan)
+            errs.append(r["latency_ms"]["wall"]["e2e"]["std"] if r else 0)
+        ax.bar(xs + off * w, vals, width=w, yerr=errs, capsize=3, label=var, color=color)
+    for i, (_, _, sel) in enumerate(groups):
+        b = sel["baseline"]["latency_ms"]["wall"]["e2e"]["mean"]
+        tops = []
+        for var, off in [("hoist", 0.0), ("graph", w)]:
+            if var in sel:
+                h = sel[var]["latency_ms"]["wall"]["e2e"]["mean"]
+                tops.append(max(b, h) * (1.02 + 0.09 * len(tops)))
+                ax.text(i + off, tops[-1],
+                        f"{var} −{(b - h) / b * 100:.0f}%", ha="center", fontsize=8,
+                        color="#e76f51" if var == "graph" else "#2a9d8f", fontweight="bold")
+    ax.set_xticks(xs, [f"{p[0]}\nchunk={p[1]}" for p in groups])
     ax.set_ylabel("end-to-end latency (ms)")
-    ax.set_title("SmolVLA: glue-layer optimization (bit-identical outputs) — H100, batch=1")
-    ax.margins(y=0.15)
+    ax.set_title("SmolVLA glue-layer ladder: upstream → hoist → CUDA-graph decode (bit-identical outputs) — H100, batch=1")
+    ax.margins(y=0.2)
     ax.legend(fontsize=9)
     fig.tight_layout()
     fig.savefig(OUT / "fig_hoist.png", dpi=160)
@@ -279,13 +292,15 @@ def write_summary_md(runs):
     lines += ["## Latency & memory (H100, GPU 1, batch=1)", "",
               "| model | precision | chunk | e2e ms (mean±std) | vision | prefill | decode | preprocess | weights GB | peak GB |",
               "|---|---|---|---|---|---|---|---|---|---|"]
-    for r in sorted(runs, key=lambda r: (r["meta"]["model"], r["meta"]["precision"], r["config"].get("chunk") or 0)):
+    for r in sorted(runs, key=lambda r: (r["meta"]["model"], r["meta"]["precision"], r["config"].get("chunk") or 0, r["config"].get("variant", "baseline"))):
         if r["config"]["batch"] != 1:
             continue
         ph = phases_of(r)
         w = r["latency_ms"]["wall"]
+        var = r["config"].get("variant", "baseline")
+        var_s = "" if var == "baseline" else f" ({var})"
         lines.append(
-            f"| {r['meta']['model']} | {r['meta']['precision']} | {r['config'].get('chunk') or '-'} "
+            f"| {r['meta']['model']} | {r['meta']['precision']}{var_s} | {r['config'].get('chunk') or '-'} "
             f"| {w['e2e']['mean']:.1f}±{w['e2e']['std']:.1f} "
             f"| {ph.get('vision', 0):.1f} | {ph.get('prefill_lm', 0):.1f} | {ph.get('decode', 0):.1f} "
             f"| {ph['_pre']:.1f} "

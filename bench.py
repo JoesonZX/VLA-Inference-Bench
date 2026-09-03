@@ -35,8 +35,8 @@ def parse_args():
     p.add_argument("--out", type=str, default="results")
     p.add_argument("--save-ref", action="store_true", help="save per-run outputs as the deviation reference")
     p.add_argument("--deviation-ref", type=str, default=None, help="path to a saved reference .pt")
-    p.add_argument("--variant", choices=["baseline", "hoist"], default="baseline",
-                   help="baseline = upstream code path; hoist = glue-layer optimized (M4)")
+    p.add_argument("--variant", choices=["baseline", "hoist", "graph"], default="baseline",
+                   help="baseline = upstream path; hoist = glue-layer optimized; graph = denoise loop captured in a CUDA graph (fp32/bf16 only)")
     return p.parse_args()
 
 

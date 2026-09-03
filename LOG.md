@@ -37,6 +37,16 @@
 
 解读：粘合层收益在**启动受限**配置（chunk=1）稳定兑现 −24% 且方差 ±19→±2（基线的抖动本身就是同步点）；chunk=50 时被删的 CPU 工作原本被 GPU 异步执行吸收（p50 持平，hoist 均值低是偶发 ~130ms 快态——CUDA graph 的潜在空间）。此结论写入 REPORT §4.5。
 
+**[V2 CUDA graph：设计、实现与结果]**
+- 三个可捕获前提（读源码确立）：denoze 期间 KV 字典只读不写（纯输入）；prefix 长度恒定（固定 prompt+图像尺寸 → 掩码/位置/时间嵌入全恒定）；hoist 循环无 host 同步。
+- 实现（models/smolvla.py `_sample_actions_graph`）：每步 eager prefill → 新 KV `copy_` 进预分配静态缓冲（地址跨步稳定）→ 10 步去噪循环 `torch.cuda.CUDAGraph` 捕获一次（side stream 预热 3 次后捕获）→ 每步拷噪声进静态输入缓冲、`replay()`、克隆静态输出。capture 必须在 `no_grad` 而非 `inference_mode` 下（step() 按变体切换上下文）。
+- **首测即通**，冒烟 93.9±1.6ms。
+- 正式三臂（安静窗口、warmup 20、30 次）：baseline 175.7±1.4 / hoist 132.9±2.7 / **graph 96.1±2.3**（p50 97.1，−45%）；graph 在 bf16 c50 = 93.0±2.3，chunk 1/10/50 平坦（82.5/92.2/96.1）。**全部偏差 = 0（逐比特一致）**。
+- 顺带解谜：上一轮 A/B 的"chunk50 偶发 130ms 快态"= 安静窗口的 hoist 稳态（本轮 p50 133 稳定复现）。
+- 测量注意：replay 不走 Python → 相位钩子看不到 decode（JSON 里 decode_step 缺失是预期）；跨变体只比墙钟 e2e。
+- 出图坑：make_plots 在 graph 数据上 KeyError（stacked 直接索引 decode 相位）→ `.get(ph, 0)`；精度矩阵图/散点图排除非 baseline 变体；三臂图两个百分比标签重叠 → 纵向错开 + margins 0.2。
+- 剩余空间：96ms 距 T1 的 kernel 地板（~65ms）还差 ~31ms，集中在 eager 的 prefill 段 Python 循环——同一武器（graph 化 prefill）可再用，列为 future work。
+
 ## Session 1 — 2026-09-03（夜间自主运行）
 
 **[00:xx] 环境盘点**

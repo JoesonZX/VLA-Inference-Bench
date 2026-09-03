@@ -1,0 +1,102 @@
+{
+  "meta": {
+    "model": "smolvla-450m",
+    "precision": "bf16",
+    "gpu": "NVIDIA H100 80GB HBM3",
+    "gpu_index_physical": 1,
+    "gpu_idle_check": {
+      "foreign_gpu_processes": [],
+      "gpu_idle": true
+    },
+    "driver": "595.58.03",
+    "versions": {
+      "torch": "2.10.0",
+      "transformers": "4.57.1",
+      "lerobot": "0.4.4",
+      "bitsandbytes": "0.50.2",
+      "timm": null,
+      "tokenizers": "0.22.2"
+    },
+    "timestamp_start": "2026-09-02T20:31:50",
+    "timestamp_end": "2026-09-02T20:32:10",
+    "vision_module_path": "vlm.model.vision_model",
+    "param_dtype": "torch.bfloat16"
+  },
+  "config": {
+    "batch": 1,
+    "chunk": 50,
+    "runs": 30,
+    "warmup": 20,
+    "seed": 0,
+    "fixture": "data/fixtures_pusht.pt",
+    "variant": "graph"
+  },
+  "latency_ms": {
+    "wall": {
+      "preprocess": {
+        "mean": 6.980570560942094,
+        "std": 0.9939141972420494,
+        "p50": 7.2266110219061375,
+        "p99": 7.42062390781939,
+        "min": 2.333607990294695,
+        "max": 7.42062390781939
+      },
+      "policy": {
+        "mean": 83.61645852370809,
+        "std": 2.105312004691063,
+        "p50": 83.43448187224567,
+        "p99": 87.57781703025103,
+        "min": 76.6915031708777,
+        "max": 87.57781703025103
+      },
+      "postprocess": {
+        "mean": 2.4367588805034757,
+        "std": 0.2522610931477812,
+        "p50": 2.4799988605082035,
+        "p99": 2.512390026822686,
+        "min": 1.1024619452655315,
+        "max": 2.512390026822686
+      },
+      "e2e": {
+        "mean": 93.03378796515365,
+        "std": 2.3423192650797056,
+        "p50": 93.05817796848714,
+        "p99": 97.28799620643258,
+        "min": 86.40708611346781,
+        "max": 97.28799620643258
+      }
+    },
+    "phases": {
+      "prefill_lm": {
+        "mean": 12.244333902994791,
+        "std": 1.7512771657286803,
+        "p50": 11.260831832885742,
+        "p99": 16.074111938476562,
+        "min": 9.503135681152344,
+        "max": 16.074111938476562
+      },
+      "vision": {
+        "mean": 14.178526941935221,
+        "std": 1.057891082854318,
+        "p50": 14.500831604003906,
+        "p99": 14.602304458618164,
+        "min": 9.83084774017334,
+        "max": 14.602304458618164
+      }
+    }
+  },
+  "memory_gb": {
+    "weights_after_load": 0.8565,
+    "weights_after_warmup": 0.9555,
+    "reserved_after_warmup": 1.0137,
+    "peak_allocated_gb": 0.977,
+    "peak_reserved_gb": 1.0137
+  },
+  "deviation": {
+    "chunk_mse": 0.002809547940672483,
+    "action_l2_mean": 0.09639296596754282,
+    "action_l2_std": 0.08698093903847572,
+    "action_l2_relative": 0.02042124546777602,
+    "max_abs_diff": 0.604961633682251
+  }
+}
