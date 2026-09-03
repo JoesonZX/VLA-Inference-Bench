@@ -2,6 +2,8 @@
 
 A single-GPU benchmark that profiles the **inference cost of Vision-Language-Action models** and quantifies what post-training INT8/INT4 quantization and action chunking buy — and what they cost.
 
+> **Follow-up project:** [vla-quant-robust](https://github.com/JoesonZX/vla-quant-robust) — asks whether the INT4 deployment recommendation carries a security price: white-box PGD across BF16/INT8/INT4 finds that OpenVLA's own action binning caps attack deviation, and that quantization sets the *relative* noise floor attacks are judged against (INT4 masks, INT8 exposes).
+
 **Models:** OpenVLA-7B (single-action, autoregressive decode) · SmolVLA-450M (50-action chunks, flow-matching decode)
 **Hardware for all numbers below:** one physical H100 80GB, GPU-idle verified before every run, warmup 5 + 30 timed steps, fixed inputs (8 frames of `lerobot/pusht`, rotated per run), bit-identical seeded noise across precisions.
 
