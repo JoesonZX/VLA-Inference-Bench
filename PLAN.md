@@ -1,7 +1,10 @@
 # VLA-Inference-Bench 项目计划
 
-> 版本：v1.0（2026-09-03，经 grill-me 访谈两轮共 8 问定稿）
+> 版本：v1.1（2026-09-03 夜间 session 后，Post-MVP 计划经 grill-me 四问定稿）
 > 本文档是工作文档（中文）；仓库对外的 README 用纯英文。
+>
+> **状态速览（2026-09-03）**：M0–M3 已全部完成——31 个正式配置（两模型 × 精度 × chunk × batch）在同一张 H100 上采完，7 张图，REPORT/README/LOG 齐备，Mini-SGLang 概念章节定稿，仓库已推送 GitHub。执行用时 2 个 session（原预算 6 周），主要收益来自 H100 通畅 + 自主夜间运行。
+> 下一阶段见文末《Post-MVP 计划（v1.1 新增）》。
 
 ---
 
@@ -194,3 +197,50 @@ VLA-Inference-Bench/
 1. `git init` + GitHub 建仓 + MIT License
 2. `pip install lerobot torch` 锁版本写 requirements
 3. 30 行脚本：随机张量 → SmolVLA → 一个 action chunk → print 计时（先求「跑起来」，再求「测得对」）
+
+---
+
+# Post-MVP 计划（v1.1 新增，2026-09-03 grill-me 四问定稿）
+
+## 已锁定决策
+
+| # | 问题 | 决策 |
+|---|------|------|
+| P1 | 主攻方向 | **A：粘合层优化实验**——把「serving 的第一笔 VLA 收益在粘合层」从论点做成实测数据 |
+| P2 | 时间预算 | 维持 ≤6h/周，无硬 deadline，2 周一个里程碑 |
+| P3 | 范围纪律 | **M4+M5 完成即封版 v1.0 打 tag**，后续想法一律进 future work，不再滚动加功能 |
+| P4 | 主页挂载 | 由 agent 写入 joesonzx.github.io（推送权限已验证可达） |
+
+明确不做（本轮）：任务成功率仿真（原 D3 决策维持，future work）、pi0、跨 GPU 对比、新量化后端（GPTQ/torchao）。
+
+## M4（第 1–2 周，12h）：粘合层优化——压掉 SmolVLA 的 "other" 相位
+
+现状：SmolVLA fp32 每步 ~56ms（约 ⅓ e2e）花在 Python 粘合层（相位分解的 "other"：tokenizer/mask 构建/逐层 Python 循环/分配器）。
+
+- [ ] **T1 先测量再动手（2h）**：torch.profiler 跑 SmolVLA fp32 单步，把 56ms 拆到具体操作；产出 profile 表进 REPORT。**没有这张表不许开优化**——避免优化错了对象。
+- [ ] **T2 干预阶梯（按性价比排序，至少做两个变体，6h）**：
+  - V1 `torch.compile`（mode=reduce-overhead / dynamic 按需）作用于 `vlm_with_expert`——最接近引擎「一条路走到黑」的做法。已知风险：chunk 扫描会触发按形状重编译，**compile 实验固定 chunk=50**；lerobot 代码图断裂多则退 V3。
+  - V2 decode CUDA graph（仿 Mini-SGLang `engine/graph.py`：capture 一次 denoise_step 固定形状重放）——与概念章节直接呼应，作为 stretch。
+  - V3 手写 Python 紧化：mask/position_ids 移出循环预分配、消逐步 `torch.cat`、消 `.item()` 同步——最稳的兜底。
+- [ ] **T3 同协议测量（2h）**：bench.py 加 `--variant` 字段；新变体与 baseline 用完全相同协议（同卡 GPU1、帧轮换、30 次）出 JSON；新图：before/after 堆叠条。
+- [ ] **T4 写作（2h）**：REPORT 新节《优化粘合层》+ README 结论行更新 + LOG 记录。
+- **完成标准**：一句可写进 README 的话——「粘合层优化把 SmolVLA 单步从 X ms 降到 Y ms（−Z%）」，附同协议 JSON 支撑。
+- **砍单顺序**：V2 → V3（只保 V1 + T1/T3/T4；若 V1 也失败，T3 直接对比 V3 与 baseline）。
+- **纪律**：量化模式（int4/int8）与 CUDA graph/compile 的组合坑多，**粘合层实验只在 fp32/bf16 上做**，不扩矩阵。
+
+## M5（第 3 周前 2 天，4h）：发布 v1.0
+
+- [ ] 主页 joesonzx.github.io 写入：项目卡片/一段简介/仓库链接（agent 执行，用户过目后 push）
+- [ ] README 终稿走查：三句话结论、图链、复现命令逐条可跑
+- [ ] `git tag v1.0` + PLAN.md 状态收口 + future work 清单归档
+- **完成标准**：陌生人从主页点进来 → 5 分钟内看懂仓库在说什么、怎么复现。到此项目定格。
+
+## 风险与缓解
+
+| 风险 | 缓解 |
+|------|------|
+| torch.compile 在 lerobot 上大量图断裂 | 先 compile 单模块（vlm_with_expert）而非全模型；失败退 V3，T1 的 profile 保证 V3 也有靶子 |
+| compile/graph 与帧轮换/多 chunk 形状交互 | 固定 chunk=50 + batch=1；其它配置沿用 baseline 数据 |
+| 优化后数值变化（compile 重排浮点） | 偏差指标照跑（对 fp32 参考），变化如实报告 |
+| H100 被占 | 沿用空闲检查协议；GPU1 被占则等/换空闲卡（换卡则该变体重测 baseline，不同卡不混表） |
+
