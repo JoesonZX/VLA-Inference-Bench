@@ -32,7 +32,23 @@ A single-GPU benchmark that profiles the **inference cost of Vision-Language-Act
 | `plots/fig_deviation.png` | token mismatch / action L2 / chunk MSE vs reference |
 | `plots/fig_batch.png` | SmolVLA batching: ×6.6 aggregate throughput at batch 8 (decode is bandwidth-bound → batches almost for free) |
 
-Full narrative with methodology, the LLM-serving concept mapping (prefill/decode, KV-cache reuse across control steps, continuous batching ↔ multi-robot), and limitations: **[REPORT.md](REPORT.md)**. Build log with every error and fix: **[LOG.md](LOG.md)**.
+Full narrative with methodology and limitations: **[REPORT.md](REPORT.md)**. Build log with every error and fix: **[LOG.md](LOG.md)**.
+
+## From LLM Serving to VLA Inference
+
+LLM serving engines (reference: LMSYS's teaching engine [Mini-SGLang](https://github.com/sgl-project/mini-sglang), ~9k lines — guided reading notes in [docs/minisglang-notes.md](docs/minisglang-notes.md)) are organized around prefill/decode two-phase scheduling, a paged KV cache with radix prefix reuse, and continuous batching. Mapping each concept onto a VLA control loop — with our measurements — tells you exactly which serving tricks transfer:
+
+| Serving concept | Mini-SGLang locus | VLA counterpart (measured here) |
+|---|---|---|
+| Prefill (compute-bound) | `scheduler/prefill.py` — token-budget batching, chunked prefill | OpenVLA: image+instruction forward each control step, 31 ms (16% of e2e). SmolVLA: prefix fill once per chunk, 9 ms |
+| Decode (bandwidth-bound) | `scheduler/decode.py` — decode batch = all runnable requests, every iteration | OpenVLA: 6 autoregressive token steps, 127 ms (**65%** — the bandwidth wall; INT4 cuts it to 101 ms by halving weight traffic). SmolVLA: 10 parallel flow-matching steps sharing one prefix KV cache, 88 ms — no per-token wall, which is why **chunk length is nearly free** |
+| Radix prefix cache | `kvcache/radix_cache.py` — token-prefix tree, page-aligned, leaf-LRU | Cross-step reuse is impossible for image tokens (they change every step); only the frozen instruction prefix is cacheable. Our split shows vision is 9–14 ms of prefill while the LM dominates → prefix-cache the instruction, recompute the image. SmolVLA already reuses KV *within* a step across all 10 denoise iterations (`fill_kv_cache` in its source) |
+| Chunked prefill + reserved budget | `prefill.py` `PrefillAdder.reserved_size = inflight_tokens` | A new robot's prefill must not eat the KV budget of robots mid-decode — the same reservation logic applies verbatim |
+| Continuous batching | `scheduler/decode.py` (39 lines — admission granularity is one iteration) | Multi-robot on one GPU. We measure ×6.6 aggregate throughput at batch 8 with decode time nearly flat (bandwidth-bound) → the physical headroom is real; chunk policies are the ideal fit (fixed 10-step decode, predictable lengths). OpenVLA's upstream code does not support batched generation — it wants one stream per robot |
+| Overlap scheduling + decode CUDA graphs | `scheduler.py` dual-stream loop; `engine/graph.py` bs∈{1,2,4,8..256} | SmolVLA spends ~56 ms/step (~⅓ of e2e) in Python glue ("other" phase) — exactly the overhead class these engine techniques eliminate. The first serving win for VLAs is not in the model, it's in the glue |
+
+One-sentence version: **a single-action VLA (OpenVLA) is a textbook autoregressive serving workload — decode-dominated, quantization-friendly, batch-hostile; a chunked VLA (SmolVLA) is prefix-heavy with parallel decode — chunking is its batching, and its fixed decode length makes it easier to schedule than any LLM.**
+
 
 ## Repo layout
 

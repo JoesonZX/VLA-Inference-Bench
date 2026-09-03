@@ -83,16 +83,27 @@ VLA 以观测→动作闭环运行：机器人控制通常要求 10–50 Hz 的�
 - SmolVLA BF16@chunk50：batch 1/2/4/8 的 e2e = 179/214/231/270 ms → **聚合吞吐 ×6.63**（近线性）。
 - 相位解释：decode 带宽受限 → batch 增大 decode 几乎不动（86→109 ms）；vision 算力受限 → 随 batch 线性增长（14→77 ms）。**瓶颈随 batch 从 decode 侧转移到 vision 侧**，继续扩 batch 的收益递减点可直接从相位数据读出（batch≈8 时 vision 已占 29%）。
 
-## 5. 从 LLM Serving 看 VLA 推理（Mini-SGLang 概念映射）【初稿，待共同精读 Mini-SGLang 源码后修订】
+## 5. 从 LLM Serving 看 VLA 推理（Mini-SGLang 概念映射，定稿）
 
-LLM serving 引擎（以 LMSYS 教学实现 Mini-SGLang 为参照）用四个概念组织推理：prefill/decode 两阶段、KV cache、continuous batching、调度器。逐条映射到 VLA 循环，每个论点都有本文实测支撑：
+> 源码已通读（sgl-project/mini-sglang，约 9000 行，克隆在服务器 `/storage/xuan/vlabench/code/mini-sglang`）；带读笔记见 `docs/minisglang-notes.md`（含逐文件行号引用）。README 里有本节的英文浓缩版。
+
+概念对照表（左列 = Mini-SGLang 的真实模块，右列 = 本仓库实测）：
+
+| Serving 概念 | Mini-SGLang 中的位置 | VLA 对应物（本文实测） |
+|---|---|---|
+| prefill（算力受限、按 token 预算凑批、可切块） | `scheduler/prefill.py`（PrefillAdder；ChunkedReq） | OpenVLA：每控制步全价 prefill 31 ms（16%）；SmolVLA：每 chunk 一次 9 ms |
+| decode（带宽受限、逐 token） | `scheduler/decode.py`（39 行：decode 批=全部 runnable 请求） | OpenVLA：6 步自回归 127 ms（**65%**，带宽墙→INT4 降到 101 ms）；SmolVLA：10 步并行去噪 88 ms（无逐 token 墙→chunk 免费的根源） |
+| 分页 KV + radix 前缀缓存 | `kvcache/radix_cache.py`（token 前缀树、页对齐、叶 LRU） | 图像 token 每步都变→跨步复用必然 miss；可缓存的只有冻结指令前缀；prefill 中 vision 仅 9–14 ms、LM 占大头→"指令前缀常驻"才值得做。SmolVLA 已在步内复用 KV（10 个去噪步共享，`fill_kv_cache`） |
+| chunked prefill + 预算保护 | `PrefillAdder.reserved_size = inflight_tokens` | 新机器人的 prefill 不得吃掉正在 decode 的机器人的 KV 预算——保留逻辑原样适用 |
+| continuous batching | 准入粒度 = 一次迭代（每轮重组批） | 多机器人共享单卡：batch 8 吞吐 ×6.6 且 decode 几乎不慢（带宽受限）→ 物理红利真实存在；chunk 模型 decode 长度固定（10 步）比变长 LLM 更好调度；OpenVLA 上游不支持批量生成→"每机器人一个流" |
+| overlap 调度 + decode CUDA graph | `scheduler.py` 双流循环；`engine/graph.py` bs∈{1,2,4,8..256} | SmolVLA 每步 ~56 ms（约 ⅓ e2e）耗在 Python 粘合层（"other" 相位）——正是这类引擎技术消除的开销。VLA 的第一笔 serving 收益不在模型在粘合层 |
+
+四个论点（每条都有双向支撑：引擎源码 + 本文数据）：
 
 1. **prefill/decode 的两种 VLA 形态**。OpenVLA 是教科书形态：图像+指令前向（31 ms）后接 6 步单 token 自回归 decode（127 ms）——decode 占 65%，与 LLM 一致；于是 LLM 侧 decode 优化（paged attention、投机解码、量化带宽减半）可直接迁移，本文 INT4 使 decode 127→101 ms 正是带宽减半效应。SmolVLA 则是另一种形态：decode 不是自回归而是 10 步 flow-matching 去噪，且**全部去噪步共享一条 prefix KV cache**（源码 `fill_kv_cache=True/False` 的用法与 serving 引擎的 prefill/decode 分离完全同构）。"chunk 几乎免费"的本质：decode 并行，不存在逐 token 带宽墙。
-2. **KV cache 能否跨控制步复用？** 整体不能：每步图像 token 都在变（SmolVLA 每步 `fill_kv_cache` 重建）。可复用的是**冻结前缀**（instruction/系统提示）——我们的分解显示 prefill 中 vision 仅 9–14 ms、语言主干占大头，说明值得做的是前缀缓存而非图像缓存。这是 serving 引擎 prefix caching 思想的 VLA 版本，收益上界可直接从本文 prefill 分解推算。
-3. **continuous batching ↔ 多机器人**。4.4 的 batch 数据是"静态批"（同进同出）；continuous batching 解决"新机器人请求到达时不必等整批结束"。chunk 模型与它天然契合：每个请求的 decode 是固定 10 步去噪，长度完全可预测，比 LLM 的变长 decode 更好调度。OpenVLA 相反：每步 7 token 短自回归 + 上游不支持批量生成，适合"每机器人一个流"而不是凑批。
-4. **调度器视角**。Mini-SGLang 的调度器在 prefill 与 decode 间分时间片；VLA 版对应问题是"谁触发重推理"：单动作模型每个控制步都全价 prefill+decode（OpenVLA 每 195 ms 一次），chunk 模型每 50 步才 prefill 一次（SmolVLA 摊销 3.5 ms/动作）。**chunk 化本质是把调度粒度从"每控制步"改成"每 chunk 周期"——这是 VLA 侧独有、LLM serving 里没有直接对应物的自由度。**
-
-（本节引用的 Mini-SGLang 模块细节——scheduler / KV cache manager / continuous batching 的具体实现——按计划与用户共同精读源码后补充对照表。）
+2. **KV cache 能否跨控制步复用？** 整体不能：每步图像 token 都在变（SmolVLA 每步 `fill_kv_cache` 重建）。可复用的是**冻结前缀**（instruction/系统提示）——我们的分解显示 prefill 中 vision 仅 9–14 ms、语言主干占大头，说明值得做的是前缀缓存而非图像缓存。这是 serving 引擎 prefix caching（radix 树按 token 前缀组织、页对齐、叶 LRU）思想的 VLA 版本，收益上界可直接从本文 prefill 分解推算。
+3. **continuous batching ↔ 多机器人**。Mini-SGLang 的 decode.py 用 39 行证明连续批的准入粒度是"一次迭代"。我们的 batch 数据是静态批（同进同出）；连续批解决"新机器人请求到达时不必等整批结束"。chunk 模型与它天然契合：每个请求的 decode 是固定 10 步去噪，长度完全可预测，比 LLM 的变长 decode 更好调度。OpenVLA 相反：每步 7 token 短自回归 + 上游不支持批量生成，适合"每机器人一个流"而不是凑批。
+4. **调度器视角**。Mini-SGLang 的调度器在 prefill 与 decode 间分时间片（且 prefill 优先、给在飞 decode 预留页预算）；VLA 版对应问题是"谁触发重推理"：单动作模型每个控制步都全价 prefill+decode（OpenVLA 每 195 ms 一次），chunk 模型每 50 步才 prefill 一次（SmolVLA 摊销 3.5 ms/动作）。**chunk 化本质是把调度粒度从"每控制步"改成"每 chunk 周期"——这是 VLA 侧独有、LLM serving 里没有直接对应物的自由度。**
 
 ## 6. 工程发现（对复现者有用）
 
