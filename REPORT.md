@@ -83,6 +83,32 @@ VLA 以观测→动作闭环运行：机器人控制通常要求 10–50 Hz 的�
 - SmolVLA BF16@chunk50：batch 1/2/4/8 的 e2e = 179/214/231/270 ms → **聚合吞吐 ×6.63**（近线性）。
 - 相位解释：decode 带宽受限 → batch 增大 decode 几乎不动（86→109 ms）；vision 算力受限 → 随 batch 线性增长（14→77 ms）。**瓶颈随 batch 从 decode 侧转移到 vision 侧**，继续扩 batch 的收益递减点可直接从相位数据读出（batch≈8 时 vision 已占 29%）。
 
+### 4.5 优化粘合层：M4 实验（profile → hoist 重排 → A/B）
+
+> 背景：4.1 里 SmolVLA 的 "other"（粘合层）相位每步 ~56ms（约 ⅓ e2e）。M4 用"先剖析再动手"的流程验证概念章节的论点——serving 技术栈的第一笔收益在粘合层。
+
+**剖析（T1，`benchmarks/profile_glue.py`）**：单步 wall ~211ms 中 **GPU 只忙 64.9ms、launch gap ≈146ms**；单步 **11253 次 kernel launch**、**32 次流同步（CPU 侧 52ms）**、`pow`×927。三个真靶子：flow-matching 循环的 `while tensor>=tensor` 条件（每轮强制 GPU→CPU 同步）、`embed_suffix` 每步重算时间步正弦嵌入（输入只有 10 个固定值）、`torch.tensor(列表, device=cuda)` 的同步 H2D。原设想的"缓存 attention mask"只值 0.2ms——**剖析避免了我们优化伪靶子**。
+
+**干预（T2，`--variant hoist`）**：时间嵌入/掩码/position ids 按 (num_steps, chunk, batch) 预计算缓存、浮点循环控制、常量掩码移出去噪循环。**输出与上游逐比特一致（30 次配对 run 偏差全部为 0）**——纯粹的执行重排，零数值代价。
+
+**A/B 结果（T3，同会话背靠背、warmup 20、30 次采样）**：
+
+| 配置 | baseline e2e | hoist e2e | p50 对比 | 偏差 |
+|---|---|---|---|---|
+| fp32 chunk=1 | 181.7±18.9 | **129.7±1.9** | **171.3 → 129.7（−24%）** | 0 |
+| fp32 chunk=10 | 172.5±2.1 | 162.9±14.3 | 172.4 → 170.4 | 0 |
+| fp32 chunk=50 | 179.8±10.6 | 165.8±19.3 | 177.8 → 177.6 | 0 |
+| bf16 chunk=50 | 177.8±2.7 | 162.1±19.6 | 178.7 → 174.4 | 与 bf16 基线同级 |
+
+结构化解读（这是本实验最有价值的部分）：
+
+- **粘合层优化的收益出现在"启动受限"的配置上**：chunk=1 时去噪张量极小、GPU 每个前向秒完工，CPU 侧的同步与启动间隙直接暴露为墙钟时间——删掉它们，p50 稳定 −24%（且分布从 ±19 收紧到 ±2，说明基线的抖动本身就是这些同步点）。
+- **chunk=50 时收益被掩盖**：大 chunk 的 decode 内核足够大，被删掉的 CPU 工作本来就在 GPU 执行期间被异步吸收（p50 持平；hoist 的低均值来自偶发的 ~130ms 快态——即若残余启动开销也被消除的潜在水平，那是 CUDA graph（V2）的领地）。
+- 测量方法论教训（详见 LOG Session 2）：H100 无 root 锁不了频率，短 run 会踩时钟斜坡；跨变体对比必须同会话背靠背 + 足够 warmup + 看中位数。
+- V1（torch.compile）按剖析数据跳过：11253 次 launch 来自 lerobot 手写的 16 层 Python 循环，compile 必然大量图断裂。
+
+**结论**：概念章节的论点升级为实测——"serving 的第一笔 VLA 收益在粘合层"在启动受限配置上成立（−24% p50、零数值代价、纯 Python 级改动）；在计算/带宽受限配置上应转投 CUDA graph 一类的执行层技术。图：`fig_hoist.png`。
+
 ## 5. 从 LLM Serving 看 VLA 推理（Mini-SGLang 概念映射，定稿）
 
 > 源码已通读（sgl-project/mini-sglang，约 9000 行，克隆在服务器 `/storage/xuan/vlabench/code/mini-sglang`）；带读笔记见 `docs/minisglang-notes.md`（含逐文件行号引用）。README 里有本节的英文浓缩版。

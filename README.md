@@ -10,6 +10,7 @@ A single-GPU benchmark that profiles the **inference cost of Vision-Language-Act
 1. **OpenVLA-7B emits one action in ~195 ms (BF16, 14.1 GB weights). NF4 INT4 cuts weights to 4.1 GB (−71%) at essentially unchanged latency (+3%)** — the memory-bound decode phase gets *faster* (127→101 ms; half the weight traffic) while the compute-bound prefill gets slower (31→53 ms; dequant overhead). Whether quantization speeds up or slows down VLA inference depends on which side of the roofline the load sits.
 2. **Action chunk length is nearly free for chunked policies.** SmolVLA chunk 1→50 raises step latency only 168→176 ms (+4.6%) because its decode is parallel flow-matching, not autoregression — amortized per-action cost drops **47×** (168 ms → 3.5 ms). Chunking is a cleaner lever than quantization; its cost is control reactivity, not latency.
 3. **bitsandbytes INT8 is a bad trade at single-step VLA loads:** the default outlier-decomposition setting is 17–34× slower than baseline; even with `threshold=0` it is 52–58% slower than BF16/FP32 on both models — while INT4's output deviation is real and grows with chunk length (chunk MSE 0.035→0.244 for chunk 1→50). Pick NF4 over INT8 on this path, and validate deviation at the task level before deployment.
+4. **The first serving win is in the glue, not the model.** Profiling SmolVLA's step shows 11,253 kernel launches and 32 stream syncs (146 ms of launch gap per ~211 ms step). Hoisting the recomputed-per-denoise-step time embeddings/masks and de-tensorizing the loop control — a pure Python-level rewrite with **bit-identical outputs** — cuts median latency 24% where the step is launch-bound (chunk=1: 171→130 ms, variance ±19→±2 ms); at chunk=50 the removed CPU work was already hidden behind large GPU kernels, pointing to CUDA-graph capture as the next lever. See REPORT §4.5.
 
 | model | precision | e2e (ms) | weights (GB) | deviation vs reference |
 |---|---|---|---|---|
@@ -31,6 +32,7 @@ A single-GPU benchmark that profiles the **inference cost of Vision-Language-Act
 | `plots/fig_chunk_curve.png` | chunk length vs latency per precision + amortized ms/action |
 | `plots/fig_deviation.png` | token mismatch / action L2 / chunk MSE vs reference |
 | `plots/fig_batch.png` | SmolVLA batching: ×6.6 aggregate throughput at batch 8 (decode is bandwidth-bound → batches almost for free) |
+| `plots/fig_hoist.png` | glue-layer optimization A/B: bit-identical outputs, −24% median latency where launch-bound |
 
 Full narrative with methodology and limitations: **[REPORT.md](REPORT.md)**. Build log with every error and fix: **[LOG.md](LOG.md)**.
 

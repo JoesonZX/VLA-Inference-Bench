@@ -35,6 +35,8 @@ def parse_args():
     p.add_argument("--out", type=str, default="results")
     p.add_argument("--save-ref", action="store_true", help="save per-run outputs as the deviation reference")
     p.add_argument("--deviation-ref", type=str, default=None, help="path to a saved reference .pt")
+    p.add_argument("--variant", choices=["baseline", "hoist"], default="baseline",
+                   help="baseline = upstream code path; hoist = glue-layer optimized (M4)")
     return p.parse_args()
 
 
@@ -152,6 +154,7 @@ def main():
             "warmup": args.warmup,
             "seed": args.seed,
             "fixture": args.fixture,
+            "variant": args.variant,
         },
         "latency_ms": {"wall": latency, "phases": phases},
         "memory_gb": {
@@ -185,6 +188,8 @@ def main():
         out_name += f"_chunk{args.chunk}"
     if args.batch > 1:
         out_name += f"_batch{args.batch}"
+    if args.variant != "baseline":
+        out_name += f"_{args.variant}"
     out_path = Path(args.out) / f"{out_name}.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(result, indent=2))

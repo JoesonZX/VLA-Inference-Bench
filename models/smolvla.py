@@ -70,6 +70,7 @@ class SmolVLAAdapter:
         self.policy = None
         self._hooks = []
         self._param_dtype = None
+        self._hoist_cache = None
 
     # ---- lifecycle ----
     def load(self):
@@ -245,6 +246,99 @@ class SmolVLAAdapter:
             time = time + dt
         return x_t
 
+    # ---- hoist variant: cache what the denoise loop recomputes every step ----
+    # Targets found by benchmarks/profile_glue.py (M4-T1): per control step the
+    # upstream path re-runs 10x (a) sinusoidal time embeddings (~927 pow kernels),
+    # (b) torch.tensor(list, device=cuda) attention masks (sync H2D), (c) a
+    # `while tensor >= tensor` loop condition (GPU->CPU sync per iteration), and
+    # (d) constant-across-steps 2D masks / position ids. All are inputs that only
+    # depend on (num_steps, chunk, bsize), so we precompute them once.
+    def _build_hoist_cache(self, m, bsize: int, dtype: torch.dtype):
+        n = m.config.num_steps
+        chunk = m.config.chunk_size
+        hidden = m.vlm_with_expert.expert_hidden_size
+        device = torch.device("cuda:0")
+        # timesteps replicate the upstream accumulation sequence 1.0, 1.0-dt, ...
+        dt = 1.0 / n
+        times, t = [], 1.0
+        for _ in range(n):
+            times.append(t)
+            t -= dt
+        embs = []
+        for tv in times:
+            tt = torch.tensor([tv], dtype=torch.float32, device=device).expand(bsize)
+            e = self._modeling.create_sinusoidal_pos_embedding(
+                tt, hidden, m.config.min_period, m.config.max_period, device=device
+            )
+            embs.append(e.to(dtype))
+        self._hoist_cache = {
+            "time_embs": torch.stack(embs),                      # (n, B, hidden)
+            "att_masks": torch.ones(bsize, chunk, dtype=dtype, device=device),
+            "pad_masks": torch.ones(bsize, chunk, dtype=torch.bool, device=device),
+            "key": (n, chunk, bsize, str(dtype)),
+            "dt": -1.0 / n,  # Euler step sign matters: upstream integrates noise->action with negative dt
+        }
+
+    def _embed_suffix_hoist(self, m, x_t, step_idx: int):
+        c = self._hoist_cache
+        action_emb = m.action_in_proj(x_t)
+        time_emb = c["time_embs"][step_idx].to(action_emb.dtype)
+        time_emb = time_emb[:, None, :].expand_as(action_emb)
+        action_time_emb = torch.cat([action_emb, time_emb], dim=2)
+        action_time_emb = m.action_time_mlp_in(action_time_emb)
+        action_time_emb = torch.nn.functional.silu(action_time_emb)
+        action_time_emb = m.action_time_mlp_out(action_time_emb)
+        return action_time_emb, c["pad_masks"], c["att_masks"]
+
+    def _sample_actions_hoist(self, m, images, img_masks, lang_tokens, lang_masks, state, noise):
+        mod = self._modeling
+        bsize = state.shape[0]
+        device = state.device
+        chunk = m.config.chunk_size
+
+        prefix_embs, prefix_pad_masks, prefix_att_masks = m.embed_prefix(
+            images, img_masks, lang_tokens, lang_masks, state=state
+        )
+        prefix_att_2d_masks = mod.make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
+        prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
+        _, past_key_values = m.vlm_with_expert.forward(
+            attention_mask=prefix_att_2d_masks,
+            position_ids=prefix_position_ids,
+            past_key_values=None,
+            inputs_embeds=[prefix_embs, None],
+            use_cache=m.config.use_cache,
+            fill_kv_cache=True,
+        )
+
+        if self._hoist_cache is None or self._hoist_cache["key"] != (m.config.num_steps, chunk, bsize, str(noise.dtype)):
+            self._build_hoist_cache(m, bsize, noise.dtype)
+
+        c = self._hoist_cache
+        # constant across denoise steps: masks and positions
+        prefix_len = prefix_pad_masks.shape[1]
+        prefix_pad_2d_masks = prefix_pad_masks[:, None, :].expand(bsize, chunk, prefix_len)
+        suffix_att_2d_masks = mod.make_att_2d_masks(c["pad_masks"], c["att_masks"].bool())
+        full_att_2d_masks = torch.cat([prefix_pad_2d_masks, suffix_att_2d_masks], dim=2)
+        prefix_offsets = torch.sum(prefix_pad_masks, dim=-1)[:, None]
+        position_ids = prefix_offsets + torch.cumsum(c["pad_masks"], dim=1) - 1
+
+        x_t = noise
+        for i in range(m.config.num_steps):
+            suffix_embs, _, _ = self._embed_suffix_hoist(m, x_t, i)
+            outputs_embeds, _ = m.vlm_with_expert.forward(
+                attention_mask=full_att_2d_masks,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                inputs_embeds=[None, suffix_embs],
+                use_cache=m.config.use_cache,
+                fill_kv_cache=False,
+            )
+            suffix_out = outputs_embeds[1]
+            suffix_out = suffix_out[:, -chunk:].to(m.action_out_proj.weight.dtype)
+            v_t = m.action_out_proj(suffix_out)
+            x_t = x_t + (c["dt"] * v_t).to(x_t.dtype)  # python-float dt: no tensor->bool sync
+        return x_t
+
     # ---- one control step ----
     def _make_noise(self, bsize: int, run_idx: int) -> torch.Tensor:
         shape = (bsize, self.policy.config.chunk_size, self.policy.config.max_action_dim)
@@ -281,7 +375,23 @@ class SmolVLAAdapter:
         torch.cuda.synchronize()
         t1 = time.perf_counter()
         with torch.inference_mode():
-            if self.args.precision == "fp32":
+            variant = getattr(self.args, "variant", "baseline")
+            if variant == "hoist":
+                pol = self.policy
+                if self.args.precision != "fp32":
+                    for k, v in batch.items():
+                        if isinstance(v, torch.Tensor) and v.is_floating_point():
+                            batch[k] = v.to(self._param_dtype)
+                images, img_masks = pol.prepare_images(batch)
+                state = pol.prepare_state(batch)
+                lang_tokens = batch[getattr(modeling, "OBS_LANGUAGE_TOKENS", "observation.language.tokens")]
+                lang_masks = batch[getattr(modeling, "OBS_LANGUAGE_ATTENTION_MASK", "observation.language_attention_mask")]
+                actions = self._sample_actions_hoist(
+                    pol.model, images, img_masks, lang_tokens, lang_masks, state, noise=noise
+                )
+                original_action_dim = pol.config.action_feature.shape[0]
+                actions = actions[:, :, :original_action_dim]
+            elif self.args.precision == "fp32":
                 actions = self.policy.predict_action_chunk(batch, noise=noise)
             else:
                 # replicate _get_action_chunk's glue around sample_actions
@@ -292,7 +402,7 @@ class SmolVLAAdapter:
                             batch[k] = v.to(self._param_dtype)
                 images, img_masks = pol.prepare_images(batch)
                 state = pol.prepare_state(batch)
-                lang_tokens = batch[getattr(modeling, "OBS_LANGUAGE_TOKENS", "observation.language_tokens")]
+                lang_tokens = batch[getattr(modeling, "OBS_LANGUAGE_TOKENS", "observation.language.tokens")]
                 lang_masks = batch[getattr(modeling, "OBS_LANGUAGE_ATTENTION_MASK", "observation.language_attention_mask")]
                 actions = self._sample_actions_lowp(
                     pol.model, images, img_masks, lang_tokens, lang_masks, state, noise=noise

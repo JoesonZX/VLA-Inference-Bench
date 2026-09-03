@@ -11,12 +11,16 @@
 | smolvla-450m | bf16 | 5 | 177.1±2.8 | 14.0 | 9.2 | 83.8 | 6.8 | 0.89 | 0.91 |
 | smolvla-450m | bf16 | 10 | 178.2±3.2 | 14.1 | 9.1 | 84.6 | 7.3 | 0.89 | 0.91 |
 | smolvla-450m | bf16 | 25 | 178.7±2.6 | 14.3 | 9.1 | 85.5 | 6.9 | 0.89 | 0.91 |
-| smolvla-450m | bf16 | 50 | 178.8±2.9 | 14.5 | 9.4 | 85.5 | 6.7 | 0.89 | 0.91 |
-| smolvla-450m | fp32 | 1 | 168.4±1.7 | 14.5 | 9.0 | 82.0 | 6.9 | 0.90 | 0.92 |
+| smolvla-450m | bf16 | 50 | 177.8±2.7 | 14.0 | 9.0 | 85.0 | 7.0 | 0.89 | 0.91 |
+| smolvla-450m | bf16 | 50 | 162.1±19.6 | 14.4 | 12.3 | 116.3 | 7.2 | 0.89 | 0.91 |
+| smolvla-450m | fp32 | 1 | 181.7±18.9 | 14.5 | 10.4 | 92.2 | 6.9 | 0.90 | 0.92 |
+| smolvla-450m | fp32 | 1 | 129.7±1.9 | 14.4 | 9.0 | 90.9 | 6.9 | 0.90 | 0.92 |
 | smolvla-450m | fp32 | 5 | 171.2±1.6 | 14.2 | 8.9 | 84.2 | 7.0 | 0.90 | 0.92 |
-| smolvla-450m | fp32 | 10 | 173.0±1.6 | 14.2 | 8.9 | 84.1 | 7.1 | 0.90 | 0.92 |
+| smolvla-450m | fp32 | 10 | 172.5±2.1 | 14.0 | 8.9 | 84.6 | 7.0 | 0.90 | 0.92 |
+| smolvla-450m | fp32 | 10 | 162.9±14.3 | 14.2 | 11.0 | 118.8 | 6.9 | 0.90 | 0.92 |
 | smolvla-450m | fp32 | 25 | 173.9±1.4 | 14.2 | 8.9 | 85.0 | 7.1 | 0.90 | 0.92 |
-| smolvla-450m | fp32 | 50 | 176.2±1.9 | 14.4 | 9.2 | 87.6 | 6.6 | 0.90 | 0.92 |
+| smolvla-450m | fp32 | 50 | 179.8±10.6 | 14.2 | 9.5 | 89.1 | 6.7 | 0.90 | 0.92 |
+| smolvla-450m | fp32 | 50 | 165.8±19.3 | 14.4 | 12.4 | 120.4 | 6.7 | 0.90 | 0.92 |
 | smolvla-450m | int4 | 1 | 204.1±1.7 | 14.8 | 12.0 | 108.5 | 6.9 | 0.46 | 0.48 |
 | smolvla-450m | int4 | 5 | 208.1±2.6 | 14.9 | 12.0 | 110.8 | 6.8 | 0.46 | 0.48 |
 | smolvla-450m | int4 | 10 | 211.4±2.1 | 14.8 | 12.2 | 113.5 | 7.1 | 0.46 | 0.48 |
@@ -39,6 +43,10 @@
 | smolvla-450m | bf16 | 25 | chunk_mse=0.001935, action_l2_mean=0.08404, action_l2_std=0.06741, action_l2_relative=0.02335, max_abs_diff=0.4296 |
 | smolvla-450m | bf16 | 5 | chunk_mse=0.0003847, action_l2_mean=0.04308, action_l2_std=0.02127, action_l2_relative=0.01929, max_abs_diff=0.1293 |
 | smolvla-450m | bf16 | 50 | chunk_mse=0.002418, action_l2_mean=0.1008, action_l2_std=0.06596, action_l2_relative=0.02139, max_abs_diff=0.5443 |
+| smolvla-450m | bf16 | 50 | chunk_mse=0.00281, action_l2_mean=0.09639, action_l2_std=0.08698, action_l2_relative=0.02042, max_abs_diff=0.605 |
+| smolvla-450m | fp32 | 10 | chunk_mse=0, action_l2_mean=0, action_l2_std=0, action_l2_relative=0, max_abs_diff=0 |
+| smolvla-450m | fp32 | 1 | chunk_mse=0, action_l2_mean=0, action_l2_std=0, action_l2_relative=0, max_abs_diff=0 |
+| smolvla-450m | fp32 | 50 | chunk_mse=0, action_l2_mean=0, action_l2_std=0, action_l2_relative=0, max_abs_diff=0 |
 | smolvla-450m | int4 | 1 | chunk_mse=0.03495, action_l2_mean=0.4258, action_l2_std=0.1685, action_l2_relative=0.2225, max_abs_diff=0.7349 |
 | smolvla-450m | int4 | 10 | chunk_mse=0.07759, action_l2_mean=0.572, action_l2_std=0.3719, action_l2_relative=0.2378, max_abs_diff=2.786 |
 | smolvla-450m | int4 | 25 | chunk_mse=0.1735, action_l2_mean=0.8306, action_l2_std=0.5926, action_l2_relative=0.2259, max_abs_diff=2.946 |

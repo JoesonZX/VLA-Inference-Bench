@@ -2,6 +2,41 @@
 
 > 与 REPORT.md 的分工：这里按时间顺序记录每次踩坑和修法，包括失败尝试；REPORT.md 只写顺畅的结论故事线。
 
+## Session 2 — 2026-09-03（M4：粘合层优化）
+
+**[M4-T1 剖析结果：先测量再动手的价值兑现]**
+- 组件级（CUDA event 包裹）：`embed_prefix` 17.3ms（含 vision ~14）、`embed_suffix` **23.9ms**（10 次去噪步的动作/时间嵌入拼装）、`make_att_2d_masks` **仅 0.2ms**——原计划 V3"缓存 mask"是伪靶子，剖析避免了优化错对象。
+- 算子级（torch.profiler 单步）：wall ~211ms 中 **GPU 仅忙 64.9ms，launch gap ≈146ms**；单步 **11253 次 kernel launch**、**32 次 cudaStreamSynchronize（CPU 侧 52ms）**、`pow`×927（时间步正弦嵌入每步重算）。结论：单步延迟是**启动受限**，不是算力/带宽受限。
+- 三个真靶子：① `while tensor >= tensor` 循环条件（每轮迭代强制 GPU→CPU 同步 ×10）；② `embed_suffix` 里 `create_sinusoidal_pos_embedding` 每控制步重算 ×10（输入只依赖 10 个固定时间步值）；③ `torch.tensor(python列表, device=cuda)` 的同步 H2D ×10（att_masks）。
+- 剖析脚本 `benchmarks/profile_glue.py`，chrome trace 存 `results/profile/`。
+
+**[决定] V1（torch.compile）按数据跳过**：11253 次 launch 的来源是 lerobot `SmolVLMWithExpertModel.forward` 的**手写 16 层 Python 循环**（逐层 attn/cross-attn/MLP 手动调用），compile 在这里必然大量图断裂；mode=reduce-overhead（CUDA graph）需要整图捕获更不可行。V2（手写 CUDA graph capture denoise_step）留作 stretch。先做 V3（hoist：预计算+浮点循环）。
+
+**[错误 17] hoist 首版 Euler 符号反了**——上游 `dt = -1/num_steps`（负号：从噪声 t=1 积分到动作 t=0），我缓存成 `+1/n`：chunk MSE 17.3（积分方向反了输出全是垃圾）。修法：时间步序列生成用 `+1/n` 递减，Euler 步长用 `-1/n`。修复后 **deviation 全 0（与上游逐比特一致）**——预计算 fp64 正弦嵌入 + python 浮点时间步 + 函数式 Euler，数值上完全等价。
+
+**[错误 18] create_sinusoidal_pos_embedding 要 torch.device 对象**，传字符串报 `'str' object has no attribute 'type'`。
+
+**[发现 B：H100 时钟斜坡测量陷阱]** hoist 冒烟两次运行 decode 相差 40ms（89 vs 131ms），两组各自 std 都很紧——不是噪声而是**时钟档不同**：前一次运行跟着两次失败尝试（GPU 已热/boost），后一次冷启动（低时钟稳态）。教训进协议：**变体 A/B 必须 baseline 与 hoist 同会话背靠背跑，warmup ≥20**。
+
+**[发现 C：相位事件和的归因假象]** hoist 后 decode_step 事件和（97.7ms）反而高于基线（87.6ms），但 e2e 降 36ms——基线里 while 条件的同步间隙发生在 forward 窗口**之间**（不计入任何相位），hoist 后 GPU 连续执行、间隙计入窗口**之内**。相位数据用于结构分析，**跨变体对比只看墙钟 e2e**。
+
+**[M4-T2 V3 hoist 实现要点]**（models/smolvla.py `_sample_actions_hoist`）
+- 时间步正弦嵌入：按 (num_steps, chunk, bsize, dtype) 缓存，进程内只算一次
+- att/pad masks 与 suffix 2D 掩码、position_ids、prefix_pad_2d_masks：控制步内算一次，10 个去噪步复用
+- `while tensor` → `for i in range(num_steps)`（python 浮点），Euler 步长 python 标量
+- 保留上游语义：`suffix_out.to(action_out_proj.weight.dtype)`（混合精度出厂态必需，uniform 低精度下为 no-op）
+
+**[M4-T3 A/B 正式结果（同会话背靠背、warmup 20、30 次）]**
+
+| 配置 | baseline | hoist | p50 对比 | 偏差 |
+|---|---|---|---|---|
+| fp32 chunk1 | 181.7±18.9 | 129.7±1.9 | 171.3→129.7（−24%） | 0 |
+| fp32 chunk10 | 172.5±2.1 | 162.9±14.3 | 172.4→170.4 | 0 |
+| fp32 chunk50 | 179.8±10.6 | 165.8±19.3 | 177.8→177.6 | 0 |
+| bf16 chunk50 | 177.8±2.7 | 162.1±19.6 | 178.7→174.4 | bf16 同级 |
+
+解读：粘合层收益在**启动受限**配置（chunk=1）稳定兑现 −24% 且方差 ±19→±2（基线的抖动本身就是同步点）；chunk=50 时被删的 CPU 工作原本被 GPU 异步执行吸收（p50 持平，hoist 均值低是偶发 ~130ms 快态——CUDA graph 的潜在空间）。此结论写入 REPORT §4.5。
+
 ## Session 1 — 2026-09-03（夜间自主运行）
 
 **[00:xx] 环境盘点**

@@ -238,6 +238,42 @@ def fig_batch(runs):
     plt.close(fig)
 
 
+def fig_hoist(runs):
+    """M4: baseline vs glue-optimized (hoist) e2e, paired per config."""
+    pairs = []
+    for prec in ["fp32", "bf16"]:
+        for chunk in [1, 10, 50]:
+            b = [r for r in runs if r["meta"]["model"] == "smolvla-450m" and r["meta"]["precision"] == prec
+                 and r["config"].get("chunk") == chunk and r["config"]["batch"] == 1
+                 and r["config"].get("variant", "baseline") == "baseline"]
+            h = [r for r in runs if r["meta"]["model"] == "smolvla-450m" and r["meta"]["precision"] == prec
+                 and r["config"].get("chunk") == chunk and r["config"]["batch"] == 1
+                 and r["config"].get("variant") == "hoist"]
+            if b and h:
+                pairs.append((prec, chunk, b[0], h[0]))
+    if not pairs:
+        return
+    fig, ax = plt.subplots(figsize=(7.5, 4.2))
+    xs = np.arange(len(pairs))
+    w = 0.38
+    for off, idx, label, color in [(-w / 2, 2, "baseline (upstream)", "#999999"), (w / 2, 3, "hoist (glue optimized)", "#2a9d8f")]:
+        vals = [p[idx]["latency_ms"]["wall"]["e2e"]["mean"] for p in pairs]
+        errs = [p[idx]["latency_ms"]["wall"]["e2e"]["std"] for p in pairs]
+        ax.bar(xs + off, vals, width=w, yerr=errs, capsize=3, label=label, color=color)
+    for i, (_, _, b, h) in enumerate(pairs):
+        saving = (b["latency_ms"]["wall"]["e2e"]["mean"] - h["latency_ms"]["wall"]["e2e"]["mean"]) / b["latency_ms"]["wall"]["e2e"]["mean"] * 100
+        top = max(b["latency_ms"]["wall"]["e2e"]["mean"], h["latency_ms"]["wall"]["e2e"]["mean"])
+        ax.text(i, top * 1.03, f"−{saving:.0f}%", ha="center", fontsize=9, color="#2a9d8f", fontweight="bold")
+    ax.set_xticks(xs, [f"{p[0]}\nchunk={p[1]}" for p in pairs])
+    ax.set_ylabel("end-to-end latency (ms)")
+    ax.set_title("SmolVLA: glue-layer optimization (bit-identical outputs) — H100, batch=1")
+    ax.margins(y=0.15)
+    ax.legend(fontsize=9)
+    fig.tight_layout()
+    fig.savefig(OUT / "fig_hoist.png", dpi=160)
+    plt.close(fig)
+
+
 def write_summary_md(runs):
     lines = ["# Results summary (auto-generated from results/*.json — do not edit by hand)", ""]
     lines += ["## Latency & memory (H100, GPU 1, batch=1)", "",
@@ -276,6 +312,7 @@ def main():
     fig_chunk_curve(runs)
     fig_deviation(runs)
     fig_batch(runs)
+    fig_hoist(runs)
     write_summary_md(runs)
     print(f"{len(runs)} result JSONs processed")
 
