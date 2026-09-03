@@ -3,8 +3,12 @@
 > 版本：v1.1（2026-09-03 夜间 session 后，Post-MVP 计划经 grill-me 四问定稿）
 > 本文档是工作文档（中文）；仓库对外的 README 用纯英文。
 >
-> **状态速览（2026-09-03）**：M0–M3 已全部完成——31 个正式配置（两模型 × 精度 × chunk × batch）在同一张 H100 上采完，7 张图，REPORT/README/LOG 齐备，Mini-SGLang 概念章节定稿，仓库已推送 GitHub。执行用时 2 个 session（原预算 6 周），主要收益来自 H100 通畅 + 自主夜间运行。
-> 下一阶段见文末《Post-MVP 计划（v1.1 新增）》。
+> **状态速览（2026-09-03，v1.0 封版）**：
+> - **M0–M3 完成**：31 个正式配置（两模型 × 精度 × chunk × batch）在同一张 H100 上采完，7 张图，REPORT/README/LOG 齐备，Mini-SGLang 概念章节定稿。
+> - **M4 完成**：粘合层剖析（11253 launch/32 同步每步）→ hoist 变体（输出与上游逐比特一致；启动受限配置中位 −24%）→ A/B 正式测量与 `fig_hoist.png`。V2（CUDA graph）与任务成功率、pi0 一并列 future work。
+> - **M5 完成（缩减）**：README 终稿走查通过（图/文件/命令核对一致）；主页介绍经用户决定**不写**；`git tag v1.0` 封版。
+> - 执行用时 3 个 session（原预算 6 周），主要收益来自 H100 通畅 + 自主夜间运行。
+> **项目到此定格。future work 清单见 README Non-goals 与 REPORT §7。**
 
 ---
 

@@ -63,6 +63,8 @@ plots/make_plots.py   # JSON -> all figures + results/summary.md
 plots/summarize.py    # console table of every JSON
 results/              # one JSON per configuration (committed; figures regenerate from these only)
 scripts/run_formal.sh # the full formal sweep as run on the H100
+scripts/run_hoist_ab.sh # M4: baseline vs glue-optimized A/B pairs (back-to-back, same session)
+benchmarks/profile_glue.py # M4: torch.profiler glue-layer decomposition (run before optimizing)
 ```
 
 ## Protocol
@@ -78,7 +80,9 @@ scripts/run_formal.sh # the full formal sweep as run on the H100
 ```bash
 # one H100 (same physical GPU for every config), HF_HOME pointing at a weight cache
 python data/fixtures.py
-bash scripts/run_formal.sh
+bash scripts/run_formal.sh          # baseline matrix (31 configs)
+bash scripts/run_hoist_ab.sh        # M4 glue-optimization A/B pairs
+python benchmarks/profile_glue.py   # glue-layer decomposition behind REPORT 4.5
 python plots/make_plots.py
 ```
 
