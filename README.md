@@ -5,6 +5,8 @@ A single-GPU benchmark that profiles the **inference cost of Vision-Language-Act
 > **Follow-up project:** [vla-quant-robust](https://github.com/JoesonZX/vla-quant-robust) — asks whether the INT4 deployment recommendation carries a security price: white-box PGD across BF16/INT8/INT4 finds that OpenVLA's own action binning caps attack deviation, and that quantization sets the *relative* noise floor attacks are judged against (INT4 masks, INT8 exposes).
 >
 > **Trilogy complete:** [vla-serving-engine](https://github.com/JoesonZX/vla-serving-engine) — builds the serving system these measurements argued for: N robot streams on one H100 through a static KV slot pool + cross-robot continuous batching + CUDA-graph decode/prefill, judged on tail latency and deadline misses. 8 robots sustain 3 Hz control each at 2.1% misses (~4.3× the naive loop's per-GPU density), with bit-identical outputs on identical traces.
+>
+> **Chapter 4:** [vla-serving-sec](https://github.com/JoesonZX/vla-serving-sec) — points an adversary at the engine: one compromised robot flooding observations taxes co-located victims +3.3 pct deadline-miss through prefill-window collision (timing, not volume, is the attack surface); two admission rules restore baseline at zero cost and survive a fully-informed adversary.
 
 **Models:** OpenVLA-7B (single-action, autoregressive decode) · SmolVLA-450M (50-action chunks, flow-matching decode)
 **Hardware for all numbers below:** one physical H100 80GB, GPU-idle verified before every run, warmup 5 + 30 timed steps, fixed inputs (8 frames of `lerobot/pusht`, rotated per run), bit-identical seeded noise across precisions.
